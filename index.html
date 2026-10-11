@@ -5,8 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <title>Weight Tracker</title>
   <meta name="description" content="Track your weight, see your trend and reach your goal.">
-  <meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#0d0d0d">
+  <script>
+    // Status bar colour. Chrome on Android ignores media="(prefers-color-scheme)" on theme-color,
+    // so pick it here and follow the phone's light/dark setting live.
+    (() => {
+      const meta = document.querySelector('meta[name="theme-color"]');
+      const dark = matchMedia('(prefers-color-scheme: dark)');
+      const sync = () => { meta.content = dark.matches ? '#0d0d0d' : '#f9f9f7'; };
+      sync();
+      dark.addEventListener('change', sync);
+      document.addEventListener('visibilitychange', sync);
+    })();
+  </script>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon-192.png" type="image/png">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">

@@ -1,6 +1,6 @@
 'use strict';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 const STORE_KEY = 'weight-tracker/v1';
 const KG_PER_LB = 0.45359237;
 const DAY_MS = 86400000;
