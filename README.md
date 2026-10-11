@@ -5,6 +5,7 @@ A small weight-tracking app that installs on Android and iPhone from the browser
 - Log a weigh-in in a couple of taps (the last weight is prefilled; use − / + to adjust)
 - A chart with 1M / 3M / 6M / 1Y / All ranges; tap it to read any day
 - Goal weight with progress and an estimated arrival date at your 4-week pace
+- Target pace as a range (e.g. lose 0.5–1.0 kg per week), and a Pace tab comparing how fast your weight changed over the last 7 days to all time, and week by week or month by month, against that range
 - Daily reminder as a recurring calendar event (Google Calendar or an .ics file)
 - CSV export and import, for backups, moving to a new phone, or opening in Excel
 - kg or lb, light and dark mode

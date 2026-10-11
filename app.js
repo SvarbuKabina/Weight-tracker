@@ -1,6 +1,6 @@
 'use strict';
 
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.1.0';
 const STORE_KEY = 'weight-tracker/v1';
 const KG_PER_LB = 0.45359237;
 const DAY_MS = 86400000;
@@ -25,8 +25,10 @@ function defaultState() {
     settings: {
       unit: 'kg',
       goal: null, // { kg, startKg }
+      targetRate: null, // { dir: -1 lose | 1 gain, minKg, maxKg } per week
       reminderTime: '08:00',
       range: '3m',
+      pacePeriod: 'week',
       lastExport: null, // ISO timestamp
     },
   };
@@ -136,11 +138,19 @@ function fmtDelta(kg) {
   return `${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(1)} ${unit()}`;
 }
 
-// Accepts "80.4", "80,4", "80.4 kg".
+// Accepts "80.4", "80,4", "80.4 kg", ".5".
 function parseWeight(str) {
-  const m = String(str ?? '').match(/\d+(?:[.,]\d+)?/);
+  const m = String(str ?? '').match(/\d+(?:[.,]\d+)?|[.,]\d+/);
   return m ? parseFloat(m[0].replace(',', '.')) : NaN;
 }
+
+// Rates are kg per week internally; shown with 2 decimals in the chosen unit.
+function fmtRate(kgPerWeek) {
+  const v = toDisplay(kgPerWeek);
+  if (Math.abs(v) < 0.005) return '0.00';
+  return `${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(2)}`;
+}
+const fmtNum = v => String(+v.toFixed(2));
 
 // ---------- Trend maths ----------
 
@@ -158,6 +168,27 @@ function pace(entries) {
   if (entries.length < 2) return null;
   if (dayNum(entries[entries.length - 1].date) - dayNum(entries[0].date) < 7) return null;
   return slope(entries.map(e => [dayNum(e.date), e.kg]));
+}
+
+// kg per week over a set of weigh-ins, or null if they cover fewer than minSpan days.
+function rateOf(entries, minSpan) {
+  if (entries.length < 2) return null;
+  if (dayNum(entries[entries.length - 1].date) - dayNum(entries[0].date) < minSpan) return null;
+  const s = slope(entries.map(e => [dayNum(e.date), e.kg]));
+  return s == null ? null : s * 7;
+}
+
+// How a weekly rate compares with the target pace range.
+function paceStatus(kgPerWeek) {
+  const t = state.settings.targetRate;
+  if (!t || kgPerWeek == null) return null;
+  const toward = kgPerWeek * t.dir; // positive = moving the way you want
+  const eps = 0.005;
+  if (toward > t.maxKg + eps) return { text: 'Faster than target', cls: '' };
+  if (toward >= t.minKg - eps) return { text: 'On target', cls: 'good' };
+  if (toward > 0.02) return { text: 'Slower than target', cls: '' };
+  if (toward >= -0.02) return { text: 'Holding steady', cls: '' };
+  return { text: t.dir < 0 ? 'Gaining, not losing' : 'Losing, not gaining', cls: '' };
 }
 
 function goalStart() {
@@ -235,8 +266,8 @@ function download(blob, filename) {
 
 // ---------- Navigation ----------
 
-const VIEWS = { '': 'home', '#history': 'history', '#settings': 'settings' };
-const TITLES = { home: 'Weight', history: 'History', settings: 'Settings' };
+const VIEWS = { '': 'home', '#pace': 'pace', '#history': 'history', '#settings': 'settings' };
+const TITLES = { home: 'Weight', pace: 'Pace', history: 'History', settings: 'Settings' };
 let currentView = 'home';
 
 function route() {
@@ -264,6 +295,7 @@ function showView(name) {
 
 function renderAll() {
   renderHome();
+  renderPace();
   renderHistory();
   renderSettings();
 }
@@ -335,6 +367,23 @@ function renderGoal(last) {
     }
   }
 
+  // Arrival window if you keep within the target pace range.
+  let targetEta = null;
+  const t = state.settings.targetRate;
+  if (t && !reached && t.dir === dir) {
+    const today = dayNum(todayISO());
+    const left = Math.abs(remaining);
+    const earliest = isoFromDay(today + Math.ceil((left / t.maxKg) * 7));
+    const latest = t.minKg > 0 ? isoFromDay(today + Math.ceil((left / t.minKg) * 7)) : null;
+    const full = { day: 'numeric', month: 'short', year: 'numeric' };
+    if (!latest) targetEta = `At your target pace: ${fmtDate(earliest, full)} at the earliest.`;
+    else if (latest === earliest) targetEta = `At your target pace: around ${fmtDate(earliest, full)}.`;
+    else {
+      const startFmt = earliest.slice(0, 4) === latest.slice(0, 4) ? { day: 'numeric', month: 'short' } : full;
+      targetEta = `At your target pace: ${fmtDate(earliest, startFmt)} – ${fmtDate(latest, full)}.`;
+    }
+  }
+
   return h('div', { class: 'goal' },
     h('div', { class: 'goal-row' },
       h('span', {}, `Goal ${fmtWU(g.kg)}`),
@@ -342,6 +391,7 @@ function renderGoal(last) {
     h('div', { class: 'meter', role: 'progressbar', 'aria-label': 'Progress toward goal', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': Math.round(frac * 100) },
       h('span', { style: `width:${(frac * 100).toFixed(1)}%` })),
     h('div', { class: 'goal-eta' }, eta),
+    targetEta ? h('div', { class: 'goal-eta' }, targetEta) : null,
   );
 }
 
@@ -366,6 +416,7 @@ function renderStats(data) {
   const last = data[data.length - 1];
   const change = data.length > 1 ? last.kg - first.kg : null;
   const p = pace(data);
+  const status = paceStatus(p == null ? null : p * 7);
   const kgs = data.map(e => e.kg);
   const avg = kgs.reduce((a, b) => a + b, 0) / kgs.length;
 
@@ -373,7 +424,8 @@ function renderStats(data) {
     tile('Change', change == null ? '—' : fmtDelta(change),
       change == null ? 'Needs 2 weigh-ins' : `since ${fmtShortDate(first.date)}`, toneFor(change)),
     tile('Weekly pace', p == null ? '—' : fmtDelta(p * 7),
-      p == null ? 'Needs a week of data' : 'per week, trend line', p == null ? '' : toneFor(p * 7)),
+      p == null ? 'Needs a week of data' : status ? `per week · ${status.text.toLowerCase()}` : 'per week, trend line',
+      p == null ? '' : status ? status.cls : toneFor(p * 7)),
     tile('Average', fmtWU(avg), `${data.length} weigh-in${data.length === 1 ? '' : 's'}`),
     tile('Lowest – highest', `${fmtW(Math.min(...kgs))}–${fmtW(Math.max(...kgs))}`, unit()),
   );
@@ -542,6 +594,198 @@ function renderChart() {
   box.onblur = hide;
   box.setAttribute('aria-label',
     `Weight chart, ${range.label.toLowerCase()}: ${data.length} weigh-ins, from ${fmtWU(data[0].kg)} to ${fmtWU(data[data.length - 1].kg)}. Use left and right arrow keys to read values.`);
+}
+
+// ---------- Rendering: pace ----------
+
+const PACE_WINDOWS = [
+  { label: 'Last 7 days', days: 7 },
+  { label: 'Last 14 days', days: 14 },
+  { label: 'Last 30 days', days: 30 },
+  { label: 'Last 90 days', days: 90 },
+  { label: 'Last 6 months', days: 182 },
+  { label: 'Last year', days: 365 },
+  { label: 'All time', days: Infinity },
+];
+
+let editingTarget = false;
+let targetDirDraft = -1;
+
+const mondayOf = day => day - ((new Date(day * DAY_MS).getUTCDay() + 6) % 7);
+
+function recentPaceRows() {
+  const today = dayNum(todayISO());
+  const rows = [];
+  let prevCount = -1;
+  for (const w of PACE_WINDOWS) {
+    const entries = w.days === Infinity ? state.entries : state.entries.filter(e => dayNum(e.date) > today - w.days);
+    if (entries.length === prevCount) continue; // same weigh-ins as the shorter window above
+    prevCount = entries.length;
+    // A trend needs the weigh-ins to cover a fair part of the window.
+    const minSpan = w.days === Infinity ? 7 : Math.max(3, Math.round(w.days * 0.4));
+    rows.push({ label: w.label, entries, rate: rateOf(entries, minSpan) });
+  }
+  return rows;
+}
+
+function weekLabel(start, thisMonday) {
+  if (start === thisMonday) return 'This week';
+  if (start === thisMonday - 7) return 'Last week';
+  const s = isoFromDay(start);
+  const e = isoFromDay(start + 6);
+  const short = { day: 'numeric', month: 'short' };
+  return s.slice(0, 7) === e.slice(0, 7) ? `${+s.slice(8)}–${fmtDate(e, short)}` : `${fmtDate(s, short)} – ${fmtDate(e, short)}`;
+}
+
+// The last 12 calendar weeks (Monday to Sunday) or months, newest first.
+function periodPaceRows(kind) {
+  if (!state.entries.length) return [];
+  const todayIso = todayISO();
+  const rows = [];
+  if (kind === 'month') {
+    const thisYear = +todayIso.slice(0, 4);
+    const firstKey = state.entries[0].date.slice(0, 7);
+    let y = thisYear;
+    let m = +todayIso.slice(5, 7);
+    for (let i = 0; i < 12; i++) {
+      const key = `${y}-${pad(m)}`;
+      if (key < firstKey) break;
+      const entries = state.entries.filter(e => e.date.startsWith(key));
+      const label = i === 0 ? 'This month' : fmtDate(`${key}-01`, y === thisYear ? { month: 'long' } : { month: 'long', year: 'numeric' });
+      rows.push({ label, entries, rate: rateOf(entries, 7), current: i === 0 });
+      if (--m === 0) { m = 12; y--; }
+    }
+  } else {
+    const firstDay = dayNum(state.entries[0].date);
+    const thisMonday = mondayOf(dayNum(todayIso));
+    for (let i = 0, start = thisMonday; i < 12 && start + 6 >= firstDay; i++, start -= 7) {
+      const entries = state.entries.filter(e => { const d = dayNum(e.date); return d >= start && d <= start + 6; });
+      rows.push({ label: weekLabel(start, thisMonday), entries, rate: rateOf(entries, 3), current: i === 0 });
+    }
+  }
+  return rows;
+}
+
+// One row per period: the rate as a dot on a shared scale, with the target range as a band behind it.
+function renderPaceList(box, rows) {
+  box.textContent = '';
+  if (!state.entries.length) {
+    box.append(h('p', { class: 'pace-empty' }, 'Log a few weigh-ins to see your pace.'));
+    return;
+  }
+  const t = state.settings.targetRate;
+  const hasRates = rows.some(r => r.rate != null);
+  const vals = [0, ...rows.filter(r => r.rate != null).map(r => toDisplay(r.rate))];
+  const band = t ? [toDisplay(t.dir * t.minKg), toDisplay(t.dir * t.maxKg)].sort((a, b) => a - b) : null;
+  if (band) vals.push(...band);
+  let lo = Math.min(...vals);
+  let hi = Math.max(...vals);
+  const minSpan = unit() === 'lb' ? 1 : 0.5;
+  if (hi - lo < minSpan) {
+    const c = (hi + lo) / 2;
+    lo = c - minSpan / 2;
+    hi = c + minSpan / 2;
+  }
+  const padX = (hi - lo) * 0.08;
+  lo -= padX;
+  hi += padX;
+  const pct = v => ((v - lo) / (hi - lo)) * 100;
+
+  for (const r of rows) {
+    const status = paceStatus(r.rate);
+    const n = r.entries.length;
+    const track = h('div', { class: 'pace-track', 'aria-hidden': 'true' },
+      band ? h('span', { class: 'pace-band', style: `left:${pct(band[0]).toFixed(2)}%;width:${(pct(band[1]) - pct(band[0])).toFixed(2)}%` }) : null,
+      h('span', { class: 'pace-zero', style: `left:${pct(0).toFixed(2)}%` }),
+      r.rate != null ? h('span', { class: 'pace-dot', style: `left:${pct(toDisplay(r.rate)).toFixed(2)}%` }) : null);
+    box.append(h('div', { class: 'pace-row' },
+      h('div', { class: 'pace-top' },
+        h('span', { class: 'pace-label' }, r.label),
+        r.rate != null
+          ? h('span', { class: 'pace-value' }, fmtRate(r.rate), h('small', {}, `${unit()}/wk`))
+          : h('span', { class: 'pace-value none' }, n ? 'Not enough data' : 'No weigh-ins')),
+      hasRates ? track : null,
+      h('div', { class: 'pace-bottom' },
+        h('span', { class: `pace-status ${status ? status.cls : ''}` }, status ? status.text : ''),
+        h('span', {}, `${n} weigh-in${n === 1 ? '' : 's'}${r.current && n ? ' so far' : ''}`)),
+    ));
+  }
+  if (!hasRates) return;
+
+  const step = niceStep(hi - lo, 5);
+  const decimals = step < 0.1 ? 2 : step < 1 ? 1 : 0;
+  const axis = h('div', { class: 'pace-axis', 'aria-hidden': 'true' });
+  const first = Math.ceil(lo / step);
+  for (let i = first; i * step <= hi; i++) {
+    const v = i * step;
+    const p = pct(v);
+    if (p < 4 || p > 96) continue; // keep labels inside the card
+    const label = Math.abs(v) < 1e-9 ? '0' : `${v > 0 ? '+' : '−'}${Math.abs(v).toFixed(decimals)}`;
+    axis.append(h('span', { style: `left:${p.toFixed(2)}%` }, label));
+  }
+  box.append(axis, h('div', { class: 'pace-key' },
+    band ? h('span', {}, h('span', { class: 'key-band' }), 'Target pace') : null,
+    h('span', {}, h('span', { class: 'key-dot' }), 'Your pace'),
+    h('span', {}, `${unit()} per week: − losing, + gaining`)));
+}
+
+function renderPace() {
+  renderTarget();
+  $('#pace-recent-help').textContent = `${unit() === 'lb' ? 'Pounds' : 'Kilograms'} per week, from a trend line through the weigh-ins in each period.`;
+  renderPaceList($('#pace-recent'), recentPaceRows());
+  $$('#period-seg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.period === state.settings.pacePeriod)));
+  renderPaceList($('#pace-periods'), periodPaceRows(state.settings.pacePeriod));
+}
+
+function renderTarget() {
+  const t = state.settings.targetRate;
+  const editing = editingTarget || !t;
+  $('#target-fields').hidden = !editing;
+  $('#target-summary').hidden = editing;
+  $('#target-edit').hidden = editing;
+  $('#target-cancel').hidden = !t;
+  $('#target-clear').hidden = !t;
+  if (t) $('#target-summary').textContent = `${t.dir < 0 ? 'Lose' : 'Gain'} ${fmtNum(toDisplay(t.minKg))}–${fmtNum(toDisplay(t.maxKg))} ${unit()} per week`;
+  $$('#target-dir button').forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.dir) === targetDirDraft)));
+}
+
+function startTargetEdit() {
+  const t = state.settings.targetRate;
+  targetDirDraft = t ? t.dir : goalDirection() || -1;
+  $('#target-min').value = t ? fmtNum(toDisplay(t.minKg)) : '';
+  $('#target-max').value = t ? fmtNum(toDisplay(t.maxKg)) : '';
+  editingTarget = true;
+  renderTarget();
+  $('#target-min').focus();
+}
+
+function saveTarget(ev) {
+  ev.preventDefault();
+  let a = parseWeight($('#target-min').value);
+  let b = parseWeight($('#target-max').value);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return toast('Enter both numbers, for example 0.5 and 1.0.');
+  if (a > b) [a, b] = [b, a];
+  const minKg = fromDisplay(a);
+  const maxKg = fromDisplay(b);
+  if (maxKg <= 0) return toast('The faster number has to be above 0.');
+  if (maxKg > 3) return toast(`That’s more than ${fmtNum(toDisplay(3))} ${unit()} a week. Enter a smaller range.`);
+  state.settings.targetRate = { dir: targetDirDraft, minKg, maxKg };
+  editingTarget = false;
+  document.activeElement.blur();
+  save();
+  renderAll();
+  toast('Target pace saved');
+}
+
+function clearTarget() {
+  state.settings.targetRate = null;
+  editingTarget = false;
+  targetDirDraft = goalDirection() || -1;
+  $('#target-min').value = '';
+  $('#target-max').value = '';
+  save();
+  renderAll();
+  toast('Target pace cleared');
 }
 
 // ---------- Rendering: history ----------
@@ -988,6 +1232,21 @@ function init() {
     state.settings.unit = b.dataset.unit;
     save();
     renderAll();
+  }));
+
+  targetDirDraft = state.settings.targetRate ? state.settings.targetRate.dir : goalDirection() || -1;
+  $('#target-form').addEventListener('submit', saveTarget);
+  $('#target-edit').addEventListener('click', startTargetEdit);
+  $('#target-cancel').addEventListener('click', () => { editingTarget = false; renderTarget(); });
+  $('#target-clear').addEventListener('click', clearTarget);
+  $$('#target-dir button').forEach(b => b.addEventListener('click', () => {
+    targetDirDraft = Number(b.dataset.dir);
+    renderTarget();
+  }));
+  $$('#period-seg button').forEach(b => b.addEventListener('click', () => {
+    state.settings.pacePeriod = b.dataset.period;
+    save();
+    renderPace();
   }));
 
   $('#goal-form').addEventListener('submit', saveGoal);

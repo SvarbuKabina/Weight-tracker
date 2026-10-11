@@ -63,6 +63,52 @@
       </div>
     </section>
 
+    <!-- Pace -->
+    <section id="view-pace" class="view" hidden>
+      <form class="card" id="target-form" novalidate>
+        <div class="card-head">
+          <h2>Target pace</h2>
+          <button type="button" class="btn-link" id="target-edit">Edit</button>
+        </div>
+        <p class="target-summary" id="target-summary"></p>
+        <div id="target-fields">
+          <p class="help">How fast you want your weight to change. Each period below is checked against this range.</p>
+          <div class="seg" id="target-dir" role="group" aria-label="Direction">
+            <button type="button" data-dir="-1">Lose</button>
+            <button type="button" data-dir="1">Gain</button>
+          </div>
+          <div class="range-row">
+            <input class="input" id="target-min" inputmode="decimal" autocomplete="off" placeholder="0.5" aria-label="Slowest pace per week">
+            <span class="range-text">to</span>
+            <input class="input" id="target-max" inputmode="decimal" autocomplete="off" placeholder="1.0" aria-label="Fastest pace per week">
+            <span class="range-text"><span data-unit-text>kg</span> per week</span>
+          </div>
+          <div class="btn-row">
+            <button type="submit" class="btn primary">Save</button>
+            <button type="button" class="btn" id="target-cancel">Cancel</button>
+            <button type="button" class="btn danger" id="target-clear">Clear</button>
+          </div>
+        </div>
+      </form>
+
+      <div class="card">
+        <div class="card-head"><h2>Recent pace</h2></div>
+        <p class="help" id="pace-recent-help"></p>
+        <div id="pace-recent"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2>Pace by period</h2>
+          <div class="seg seg-sm" id="period-seg" role="group" aria-label="Period">
+            <button type="button" data-period="week">Weeks</button>
+            <button type="button" data-period="month">Months</button>
+          </div>
+        </div>
+        <div id="pace-periods"></div>
+      </div>
+    </section>
+
     <!-- History -->
     <section id="view-history" class="view" hidden>
       <div id="history-list"></div>
@@ -140,6 +186,10 @@
       <a class="tab" href="#" data-view="home">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18l5-6 4 3 7-9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span>Home</span>
+      </a>
+      <a class="tab" href="#pace" data-view="pace">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17a8 8 0 1 1 16 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 17l4-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <span>Pace</span>
       </a>
       <a class="tab" href="#history" data-view="history">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
