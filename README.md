@@ -1,0 +1,49 @@
+# Weight Tracker
+
+A small weight-tracking app that installs on Android and iPhone from the browser. It works offline and keeps your data on your phone.
+
+- Log a weigh-in in a couple of taps (the last weight is prefilled; use − / + to adjust)
+- A chart with 1M / 3M / 6M / 1Y / All ranges; tap it to read any day
+- Goal weight with progress and an estimated arrival date at your 4-week pace
+- Daily reminder as a recurring calendar event (Google Calendar or an .ics file)
+- CSV export and import, for backups, moving to a new phone, or opening in Excel
+- kg or lb, light and dark mode
+
+## Files
+
+| File | What it is |
+|---|---|
+| `index.html` | The page |
+| `styles.css` | Look and layout |
+| `app.js` | All app logic |
+| `sw.js` | Service worker (offline support and updates) |
+| `manifest.webmanifest` | Makes it installable (name, icons, colours) |
+| `icons/` | App icons |
+
+`.claude/` holds a local test server and is not part of the app.
+
+## Put it online with GitHub Pages (free)
+
+The app has to be served over HTTPS before a phone can install it.
+
+1. Create a free account at github.com.
+2. Create a new **public** repository named `weight-tracker`.
+3. Click **Add file → Upload files** and drag in `index.html`, `styles.css`, `app.js`, `sw.js`, `manifest.webmanifest` and the `icons` folder. Click **Commit changes**.
+4. Open **Settings → Pages**. Under "Branch" pick `main` and `/ (root)`, then **Save**.
+5. After a minute the app is live at `https://<your-username>.github.io/weight-tracker/`.
+
+The code is public, but your weigh-ins are not: they never leave your phone.
+
+## Install on your phone
+
+- **Android (Chrome):** open the link, then tap **Install app** under Settings in the app, or use the ⋮ menu → **Install app**.
+- **iPhone (Safari):** open the link, tap **Share → Add to Home Screen**. Install it *before* you start logging, because the Home Screen app keeps its own data, separate from Safari.
+
+## Moving to a new phone
+
+On the old phone: Settings → Backup → **Export CSV** (or **Share CSV** to send it to yourself).
+On the new phone: install the app, then Settings → Backup → **Import CSV**.
+
+## Updating the app
+
+Upload the changed files to the same GitHub repository. The next time the app opens with internet, it loads the new version. Your data isn't touched. Bump `APP_VERSION` in `app.js` so you can see which version you're running (Settings → About).

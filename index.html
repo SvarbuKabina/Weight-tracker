@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <title>Weight Tracker</title>
+  <meta name="description" content="Track your weight, see your trend and reach your goal.">
+  <meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Weight">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1 id="view-title">Weight</h1>
+  </header>
+
+  <main>
+    <!-- Home -->
+    <section id="view-home" class="view">
+      <div class="card hero" id="hero"></div>
+
+      <a class="banner" id="backup-nudge" href="#settings" hidden>
+        <span>Back up your weigh-ins so you can't lose them.</span>
+        <strong>Back up</strong>
+      </a>
+
+      <div id="home-data">
+        <div class="seg" id="range" role="group" aria-label="Time range">
+          <button type="button" data-range="1m">1M</button>
+          <button type="button" data-range="3m">3M</button>
+          <button type="button" data-range="6m">6M</button>
+          <button type="button" data-range="1y">1Y</button>
+          <button type="button" data-range="all">All</button>
+        </div>
+
+        <div class="card chart-card">
+          <div class="chart-head">
+            <h2>Weight</h2>
+            <span class="chart-sub" id="chart-sub"></span>
+          </div>
+          <div class="chart" id="chart" tabindex="0"></div>
+        </div>
+
+        <div class="stats" id="stats"></div>
+      </div>
+    </section>
+
+    <!-- History -->
+    <section id="view-history" class="view" hidden>
+      <div id="history-list"></div>
+    </section>
+
+    <!-- Settings -->
+    <section id="view-settings" class="view" hidden>
+      <div class="card" id="install-card" hidden>
+        <h2>Install on your phone</h2>
+        <p class="help" id="install-text"></p>
+        <button type="button" class="btn primary" id="install-btn" hidden>Install app</button>
+      </div>
+
+      <div class="card">
+        <h2>Units</h2>
+        <div class="seg" id="unit-seg" role="group" aria-label="Units">
+          <button type="button" data-unit="kg">Kilograms (kg)</button>
+          <button type="button" data-unit="lb">Pounds (lb)</button>
+        </div>
+      </div>
+
+      <form class="card" id="goal-form" novalidate>
+        <h2>Goal weight</h2>
+        <p class="help">Your progress and an estimated arrival date show on the Home screen.</p>
+        <div class="field-row">
+          <div class="input-wrap">
+            <input class="input" id="goal-input" inputmode="decimal" autocomplete="off" placeholder="e.g. 75.0" aria-label="Goal weight">
+            <span class="unit-suffix" data-unit-text>kg</span>
+          </div>
+          <button type="submit" class="btn primary">Save</button>
+          <button type="button" class="btn" id="goal-clear">Clear</button>
+        </div>
+      </form>
+
+      <div class="card">
+        <h2>Daily reminder</h2>
+        <p class="help">Web apps can't schedule notifications on their own, so the reminder goes into your calendar as a daily event.</p>
+        <div class="field">
+          <label class="field-label" for="reminder-time">Time</label>
+          <input class="input input-time" type="time" id="reminder-time">
+        </div>
+        <div class="btn-row">
+          <a class="btn primary" id="gcal-link" target="_blank" rel="noopener">Add to Google Calendar</a>
+          <button type="button" class="btn" id="ics-btn">Download .ics file</button>
+        </div>
+        <p class="help small">In Google Calendar, set the notification to “At time of event” before saving. The .ics file works with Apple Calendar, Outlook and most other calendar apps.</p>
+      </div>
+
+      <div class="card">
+        <h2>Backup</h2>
+        <p class="help" id="backup-status"></p>
+        <div class="btn-row">
+          <button type="button" class="btn primary" id="export-btn">Export CSV</button>
+          <button type="button" class="btn" id="share-btn" hidden>Share CSV</button>
+          <label class="btn">Import CSV<input type="file" id="import-input" accept=".csv,text/csv,text/plain" hidden></label>
+        </div>
+        <p class="help small">The file has the date, weight in kg and lb, and your notes. Use it to move your data to a new phone or open it in Excel.</p>
+      </div>
+
+      <div class="card">
+        <h2>About</h2>
+        <p class="help">Version <span id="app-version"></span> · <span id="storage-status"></span></p>
+        <p class="help">Your weigh-ins are stored only on this device.</p>
+        <button type="button" class="btn danger" id="wipe-btn">Delete all data</button>
+      </div>
+    </section>
+  </main>
+
+  <button type="button" class="fab" id="add-btn" aria-label="Add weigh-in">
+    <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+  </button>
+
+  <nav class="tabbar" aria-label="Main">
+    <div class="tabbar-inner">
+      <a class="tab" href="#" data-view="home">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18l5-6 4 3 7-9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Home</span>
+      </a>
+      <a class="tab" href="#history" data-view="history">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <span>History</span>
+      </a>
+      <a class="tab" href="#settings" data-view="settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="7" r="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="10" cy="17" r="2" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+        <span>Settings</span>
+      </a>
+    </div>
+  </nav>
+
+  <dialog id="entry-dialog" aria-labelledby="entry-title">
+    <form id="entry-form" class="sheet" novalidate>
+      <h2 id="entry-title">Add weigh-in</h2>
+      <div class="field">
+        <label class="field-label" for="entry-weight">Weight</label>
+        <div class="stepper">
+          <button type="button" class="step-btn" data-step="-1" aria-label="Decrease by 0.1">−</button>
+          <div class="input-wrap">
+            <input id="entry-weight" class="input weight-input" inputmode="decimal" autocomplete="off" autofocus>
+            <span class="unit-suffix" data-unit-text>kg</span>
+          </div>
+          <button type="button" class="step-btn" data-step="1" aria-label="Increase by 0.1">+</button>
+        </div>
+      </div>
+      <div class="field">
+        <label class="field-label" for="entry-date">Date</label>
+        <input id="entry-date" class="input" type="date">
+      </div>
+      <div class="field">
+        <label class="field-label" for="entry-note">Note <span class="optional">(optional)</span></label>
+        <input id="entry-note" class="input" maxlength="200" autocomplete="off" placeholder="e.g. after workout">
+      </div>
+      <p class="form-error" id="entry-error" role="alert" hidden></p>
+      <div class="sheet-actions">
+        <button type="button" class="btn danger" id="entry-delete" hidden>Delete</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="entry-cancel">Cancel</button>
+        <button type="submit" class="btn primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
