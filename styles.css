@@ -341,6 +341,9 @@ a.btn-link { text-decoration: none; }
 .ex-title { flex: 1; min-width: 0; margin: 0; font-size: 17px; }
 .ex-select { flex: 1; min-width: 0; padding: 8px 10px; font-weight: 650; }
 .last-time { margin: 8px 0 10px; color: var(--ink-2); font-size: 13px; }
+.last-time p { margin: 0; }
+.last-time p + p { margin-top: 3px; }
+.pos-card { padding: 12px 16px; }
 .sets { margin-bottom: 10px; }
 .set-row { display: grid; grid-template-columns: 26px 1fr 14px 1fr 36px; align-items: center; gap: 6px; margin-bottom: 6px; }
 .set-head { margin-bottom: 2px; color: var(--muted); font-size: 12px; font-weight: 600; text-align: center; }

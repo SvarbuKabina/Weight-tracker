@@ -4,7 +4,7 @@
 // optional substitutes; logged sessions of sets (weight × reps); progress per exercise.
 // Loaded before app.js and uses its helpers ($, h, s, state, save, toast, …) when called.
 
-const SERIES_MAX = 3; // the main lift plus up to two substitutes on one chart
+const SERIES_MAX = 3; // lines on one progress chart (positions, or a lift and what replaced it)
 const BODYWEIGHT_HINT = /pull[- ]?ups?|chin[- ]?ups?|\bdips?\b|push[- ]?ups?|muscle[- ]?ups?|pistol|plank|inverted row|bodyweight/i;
 
 function defaultGym() {
@@ -51,6 +51,31 @@ function ensureExercise(name, bodyweight) {
 
 const validSets = en => en.sets.filter(st => st.reps >= 1);
 
+// Where in the routine a lift was done: its routine slot (a workout's numbered exercise),
+// or for extras, the workout it was added to. Slots keep their id when moved, so a
+// position's history follows it.
+const posKey = (ses, en) => en.slotId || `x-${ses.workoutId || 'none'}`;
+
+// Labels for a position, from the lift's point of view (it may be the slot's substitute).
+function positionInfo(key, ses, exId) {
+  const g = G();
+  if (!key.startsWith('x-')) {
+    for (let wi = 0; wi < g.workouts.length; wi++) {
+      const w = g.workouts[wi];
+      const i = w.slots.findIndex(sl => sl.id === key);
+      if (i < 0) continue;
+      const main = w.slots[i].main;
+      return {
+        short: `${w.name} #${i + 1}`,
+        long: `${w.name} · exercise ${i + 1}${main !== exId ? ` (instead of ${exName(main)})` : ''}`,
+        order: wi * 1000 + i,
+      };
+    }
+    return { short: `${ses.name} (old)`, long: `${ses.name} · no longer in your routine`, order: 1e6 };
+  }
+  return { short: `${ses.name} extra`, long: `${ses.name} · added as an extra`, order: 2e6 };
+}
+
 // Every logged appearance of an exercise, oldest first.
 function historyOf(exId) {
   const out = [];
@@ -58,34 +83,48 @@ function historyOf(exId) {
     for (const en of ses.entries) {
       if (en.exerciseId !== exId) continue;
       const sets = validSets(en);
-      if (sets.length) out.push({ ses, sets, exId });
+      if (sets.length) out.push({ ses, sets, exId, pos: posKey(ses, en) });
     }
   }
   return out;
 }
 
-function lastTime(exId, current) {
+// The positions a lift has history in, in routine order.
+function positionsOf(exId, hist) {
+  const first = new Map();
+  for (const x of hist) if (!first.has(x.pos)) first.set(x.pos, x.ses);
+  return [...first].map(([key, ses]) => ({ key, ...positionInfo(key, ses, exId) }))
+    .sort((a, b) => a.order - b.order || a.long.localeCompare(b.long));
+}
+
+// Other lifts logged in the same position (what you did there instead), by exercise.
+function othersInPosition(pos, exId) {
+  const by = new Map();
+  for (const ses of G().sessions) {
+    for (const en of ses.entries) {
+      if (en.exerciseId === exId || posKey(ses, en) !== pos) continue;
+      const sets = validSets(en);
+      if (!sets.length) continue;
+      if (!by.has(en.exerciseId)) by.set(en.exerciseId, []);
+      by.get(en.exerciseId).push({ ses, sets, exId: en.exerciseId, pos });
+    }
+  }
+  return by;
+}
+
+// The newest earlier time a lift was done; with `pos`, only in that position.
+function lastTime(exId, current, pos) {
   const list = G().sessions;
   for (let i = list.length - 1; i >= 0; i--) {
     const ses = list[i];
     if (ses === current || ses.date > current.date) continue;
     for (const en of ses.entries) {
-      if (en.exerciseId === exId && validSets(en).length) return { ses, sets: validSets(en) };
+      if (en.exerciseId !== exId || !validSets(en).length) continue;
+      if (pos && posKey(ses, en) !== pos) continue;
+      return { ses, sets: validSets(en), pos: posKey(ses, en) };
     }
   }
   return null;
-}
-
-// Exercises that share a routine slot with this one (its main lift or substitutes).
-function relatedTo(exId) {
-  const ids = [];
-  for (const w of G().workouts) {
-    for (const sl of w.slots) {
-      const group = [sl.main, ...sl.subs];
-      if (group.includes(exId)) for (const id of group) if (id !== exId && !ids.includes(id)) ids.push(id);
-    }
-  }
-  return ids;
 }
 
 function slotFor(ses, en) {
@@ -209,12 +248,12 @@ function leaveGymRoute(prevHash, nextHash) {
 
 // ---------- Routes ----------
 
-// #gym · #gym/routine · #gym/w/<sessionId> · #gym/x/<exerciseId>
+// #gym · #gym/routine · #gym/w/<sessionId> · #gym/x/<exerciseId>[/<position>]
 function parseGymRoute(hash) {
-  const [, page, id] = String(hash).split('/');
+  const [, page, id, pos] = String(hash).split('/');
   if (page === 'routine') return { page: 'routine' };
   if (page === 'w' && id) return { page: 'session', id };
-  if (page === 'x' && id) return { page: 'exercise', id };
+  if (page === 'x' && id) return { page: 'exercise', id, pos: pos || null };
   return { page: 'home' };
 }
 
@@ -229,7 +268,7 @@ function renderGym(hash = location.hash) {
   }
   if (r.page === 'exercise') {
     const ex = exById(r.id);
-    if (ex) return renderExercise(box, ex);
+    if (ex) return renderExercise(box, ex, r.pos);
   }
   if (r.page !== 'home') history.replaceState(null, '', '#gym');
   setTitle('Gym', false);
@@ -540,7 +579,11 @@ function entryCard(ses, en) {
   const choices = slot ? [slot.main, ...slot.subs] : [en.exerciseId];
   if (!choices.includes(en.exerciseId)) choices.push(en.exerciseId);
   const ex = exById(en.exerciseId) || { id: en.exerciseId, name: 'Deleted exercise', bodyweight: false };
-  const last = lastTime(en.exerciseId, ses);
+  const pos = posKey(ses, en);
+  // Same position first (last Upper 2 #1 for Upper 2 #1), so rep schemes match.
+  const lastHere = lastTime(en.exerciseId, ses, pos);
+  const lastAny = lastTime(en.exerciseId, ses);
+  const last = lastHere || lastAny; // reference for placeholders and new sets
   const card = h('div', { class: 'card ex-card' });
 
   const redraw = focusNewSet => {
@@ -561,12 +604,17 @@ function entryCard(ses, en) {
     : h('h2', { class: 'ex-title' }, ex.name);
 
   card.append(h('div', { class: 'ex-head' }, title,
-    h('a', { class: 'btn-link', href: `#gym/x/${ex.id}` }, 'Progress'),
+    h('a', { class: 'btn-link', href: `#gym/x/${ex.id}/${pos}` }, 'Progress'),
     slot ? null : linkBtn('Remove', () => { ses.entries.splice(ses.entries.indexOf(en), 1); save(); card.remove(); }, 'danger-link')));
 
-  card.append(h('p', { class: 'last-time' }, last
-    ? `Last time (${fmtShortDate(last.ses.date)}): ${fmtSets(last.sets, ex)}`
-    : 'No history yet for this exercise.'));
+  const lines = [];
+  if (lastHere) lines.push(`Last time here (${fmtShortDate(lastHere.ses.date)}): ${fmtSets(lastHere.sets, ex)}`);
+  if (lastAny && (!lastHere || lastAny.ses !== lastHere.ses)) {
+    const where = positionInfo(lastAny.pos, lastAny.ses, en.exerciseId).short;
+    lines.push(`${lastHere ? 'Most recent' : 'Last time'} (${where}, ${fmtShortDate(lastAny.ses.date)}): ${fmtSets(lastAny.sets, ex)}`);
+  }
+  if (!lines.length) lines.push('No history yet for this exercise.');
+  card.append(h('div', { class: 'last-time' }, lines.map(t => h('p', {}, t))));
 
   if (en.sets.length) {
     const sets = h('div', { class: 'sets' },
@@ -601,9 +649,9 @@ function entryCard(ses, en) {
   };
   card.append(h('div', { class: 'btn-row' },
     h('button', { type: 'button', class: 'btn', onclick: addSet }, '+ Add set'),
-    !en.sets.length && last ? h('button', {
+    !en.sets.length && lastHere ? h('button', {
       type: 'button', class: 'btn',
-      onclick: () => { en.sets = last.sets.map(st => ({ kg: st.kg, reps: st.reps })); save(); redraw(); },
+      onclick: () => { en.sets = lastHere.sets.map(st => ({ kg: st.kg, reps: st.reps })); save(); redraw(); },
     }, 'Same as last time') : null));
   return card;
 }
@@ -658,15 +706,37 @@ function deleteSession(ses) {
 
 // ---------- Exercise progress ----------
 
-function renderExercise(box, ex) {
+function renderExercise(box, ex, posParam) {
   setTitle(ex.name, true);
   const settings = state.settings;
-  const hist = historyOf(ex.id);
+  const allHist = historyOf(ex.id);
+  const positions = positionsOf(ex.id, allHist);
+  // One position: nothing to choose. Several: all of them, unless the address names one.
+  const pos = positions.length === 1 ? positions[0].key
+    : positions.some(p => p.key === posParam) ? posParam : 'all';
+  const hist = pos === 'all' ? allHist : allHist.filter(x => x.pos === pos);
+  const posShort = key => (positions.find(p => p.key === key) || {}).short || '';
   const keys = metricKeys(ex);
   const kind = ex.bodyweight ? 'bw' : 'w';
   const metric = keys.includes((settings.gymMetric || {})[kind]) ? settings.gymMetric[kind] : keys[0];
 
-  if (!hist.length) {
+  if (positions.length > 1) {
+    box.append(h('div', { class: 'card pos-card' },
+      h('label', { class: 'field-label', for: 'pos-select' }, 'Position in your routine'),
+      h('select', {
+        class: 'input', id: 'pos-select',
+        onchange: e => {
+          const v = e.target.value;
+          history.replaceState(null, '', v === 'all' ? `#gym/x/${ex.id}` : `#gym/x/${ex.id}/${v}`);
+          renderGym();
+        },
+      },
+      h('option', { value: 'all', selected: pos === 'all' }, 'All positions'),
+      positions.map(p => h('option', { value: p.key, selected: p.key === pos },
+        `${p.long} · ${plural(allHist.filter(x => x.pos === p.key).length, 'session')}`)))));
+  }
+
+  if (!allHist.length) {
     box.append(h('div', { class: 'card' }, h('p', { class: 'help' }, 'No sets logged for this exercise yet. Its progress shows up here after your first workout with it.')));
   } else {
     const all = hist.flatMap(x => x.sets.map(st => ({ st, date: x.ses.date })));
@@ -695,30 +765,37 @@ function renderExercise(box, ex) {
     tiles.push(tile('Sessions', String(hist.length), `since ${fmtShortDate(hist[0].ses.date)}`));
     box.append(h('div', { class: 'stats' }, tiles));
 
-    // Chart card: measure, substitutes, chart, legend
-    const related = relatedTo(ex.id).filter(id => exById(id) && historyOf(id).length);
-    const include = !!settings.gymIncludeSubs && related.length > 0;
-    let ids = [ex.id];
+    // Chart lines: one per position (all positions), or this lift in one position plus,
+    // optionally, the other lifts done in that position.
+    const series = [];
     const left = [];
-    if (include) {
-      for (const id of related) {
-        const other = exById(id);
-        // Weight-based measures don't compare between bodyweight and loaded lifts.
-        if (METRICS[metric].load && other.bodyweight !== ex.bodyweight) left.push(`${other.name} (weights of bodyweight and loaded lifts don’t compare)`);
-        else if (ids.length < SERIES_MAX) ids.push(id);
-        else left.push(other.name);
+    let others = new Map();
+    if (pos === 'all') {
+      positions.forEach((p, k) => {
+        if (k < SERIES_MAX) series.push({ name: p.short, list: allHist.filter(x => x.pos === p.key), ex });
+        else left.push(`${p.short} (pick it above to see it)`);
+      });
+    } else {
+      series.push({ name: ex.name, list: hist, ex });
+      others = othersInPosition(pos, ex.id);
+      if (settings.gymIncludeSubs) {
+        for (const [id, list] of others) {
+          const other = exById(id) || { name: 'Deleted exercise', bodyweight: false };
+          // Weight-based measures don't compare between bodyweight and loaded lifts.
+          if (METRICS[metric].load && other.bodyweight !== ex.bodyweight) left.push(`${other.name} (weights of bodyweight and loaded lifts don’t compare)`);
+          else if (series.length < SERIES_MAX) series.push({ name: other.name, list, ex: other });
+          else left.push(other.name);
+        }
       }
     }
-    const series = ids.map((id, k) => {
-      const e = exById(id);
-      return {
-        name: e.name, cls: `s${k + 1}`,
-        points: historyOf(id).map(x => ({
-          day: dayNum(x.ses.date), date: x.ses.date, value: metricValue(metric, METRICS[metric].of(x.sets)),
-          text: fmtMetric(metric, METRICS[metric].of(x.sets)), detail: fmtSets(x.sets, e),
-        })),
-      };
+    series.forEach((sr, k) => {
+      sr.cls = `s${k + 1}`;
+      sr.points = sr.list.map(x => ({
+        day: dayNum(x.ses.date), date: x.ses.date, value: metricValue(metric, METRICS[metric].of(x.sets)),
+        text: fmtMetric(metric, METRICS[metric].of(x.sets)), detail: fmtSets(x.sets, sr.ex),
+      }));
     });
+    const hasOthersSomewhere = pos === 'all' && positions.some(p => othersInPosition(p.key, ex.id).size);
 
     const chartBox = h('div', { class: 'chart gym-chart', tabindex: 0 });
     const card = h('div', { class: 'card chart-card' },
@@ -726,25 +803,27 @@ function renderExercise(box, ex) {
         type: 'button', 'aria-pressed': String(k === metric),
         onclick: () => { settings.gymMetric = { ...(settings.gymMetric || {}), [kind]: k }; save(); renderGym(); },
       }, METRICS[k].label))),
-      related.length ? h('label', { class: 'check' },
-        h('input', { type: 'checkbox', checked: include, onchange: e => { settings.gymIncludeSubs = e.target.checked; save(); renderGym(); } }),
-        h('span', {}, `Include substitutes (${related.map(exName).join(', ')})`)) : null,
+      others.size ? h('label', { class: 'check' },
+        h('input', { type: 'checkbox', checked: !!settings.gymIncludeSubs, onchange: e => { settings.gymIncludeSubs = e.target.checked; save(); renderGym(); } }),
+        h('span', {}, `Include what you did here instead (${[...others.keys()].map(exName).join(', ')})`)) : null,
       chartBox,
       series.length > 1 ? h('div', { class: 'legend' }, series.map(sr => h('span', {}, h('span', { class: `key-line ${sr.cls}` }), sr.name))) : null,
       left.length ? h('p', { class: 'help small' }, `Not shown: ${left.join(', ')}.`) : null,
+      hasOthersSomewhere ? h('p', { class: 'help small' }, 'Pick a position above to compare with the lifts you sometimes do there instead.') : null,
       metric === 'e1rm' ? h('p', { class: 'help small' }, 'Estimated one-rep max from your best set each session (Epley formula).') : null);
     box.append(card);
     gymChart(chartBox, series);
 
-    // Log: this exercise, plus substitutes when they're included
-    const rows = series.flatMap((sr, k) => (k === 0 ? hist : historyOf(ids[k])).map(x => ({ x, name: k ? sr.name : null })))
-      .sort((a, b) => byDate(b.x.ses, a.x.ses));
+    // Log: this lift (tagged with its position when showing all), plus included lifts
+    const rows = [
+      ...hist.map(x => ({ x, tag: pos === 'all' ? posShort(x.pos) : null })),
+      ...series.slice(pos === 'all' ? series.length : 1).flatMap(sr => sr.list.map(x => ({ x, tag: sr.name }))),
+    ].sort((a, b) => byDate(b.x.ses, a.x.ses));
     const list = h('div', { class: 'card list' });
-    for (const { x, name } of rows) {
-      const e = exById(x.exId);
+    for (const { x, tag } of rows) {
       list.append(listRow(
-        `${fmtDate(x.ses.date, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}${name ? ` · ${name}` : ''}`,
-        fmtSets(x.sets, e),
+        `${fmtDate(x.ses.date, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}${tag ? ` · ${tag}` : ''}`,
+        fmtSets(x.sets, exById(x.exId)),
         () => { location.hash = `#gym/w/${x.ses.id}`; },
         h('span', { class: 'row-weight' }, fmtMetric(metric, METRICS[metric].of(x.sets)))));
     }

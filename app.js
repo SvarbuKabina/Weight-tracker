@@ -1,6 +1,6 @@
 'use strict';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 const STORE_KEY = 'weight-tracker/v1';
 const KG_PER_LB = 0.45359237;
 const DAY_MS = 86400000;
@@ -1095,12 +1095,13 @@ function buildCSV() {
 }
 
 function buildGymCSV() {
-  const rows = [['date', 'workout', 'exercise', 'set', 'weight_kg', 'weight_lb', 'reps', 'bodyweight']];
+  const rows = [['date', 'workout', 'position', 'exercise', 'set', 'weight_kg', 'weight_lb', 'reps', 'bodyweight']];
   for (const ses of state.gym.sessions) {
     for (const en of ses.entries) {
       const ex = state.gym.exercises[en.exerciseId];
+      const position = positionInfo(posKey(ses, en), ses, en.exerciseId).short;
       validSets(en).forEach((st, i) => rows.push([
-        ses.date, csvText(ses.name || ''), csvText(ex ? ex.name : ''), i + 1,
+        ses.date, csvText(ses.name || ''), csvText(position), csvText(ex ? ex.name : ''), i + 1,
         +st.kg.toFixed(2), +(st.kg / KG_PER_LB).toFixed(1), st.reps, ex && ex.bodyweight ? 'yes' : 'no',
       ]));
     }

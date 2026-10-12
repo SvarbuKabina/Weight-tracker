@@ -12,9 +12,10 @@ A small app for tracking body weight and gym lifts. It installs on Android and i
 **Gym**
 - A routine of workouts (e.g. Push, Pull, Legs), each a list of exercises
 - Substitutes per exercise (e.g. pec deck for incline bench); pick which one you did when logging
-- Log sets of weight × reps, with last time's sets shown and one tap to repeat them
+- Log sets of weight × reps, with last time's sets shown (from the same position in the same workout first) and one tap to repeat them
 - Bodyweight exercises (pull-ups, dips…) log added weight only
-- Progress per lift: est. 1RM, heaviest set or volume (most reps, total reps or added weight for bodyweight lifts), with an option to include substitutes on the same chart
+- Progress per lift: est. 1RM, heaviest set or volume (most reps, total reps or added weight for bodyweight lifts)
+- History follows the lift by name across workouts, and can be split by position (e.g. incline bench as Upper 2 #1 vs as the substitute in Upper 1 #3), optionally with whatever else you did in that position
 
 **Everywhere**
 - Full backup and restore (one .json file), plus CSV exports of weigh-ins and workouts for spreadsheets
