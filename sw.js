@@ -1,10 +1,11 @@
 // Network first, cache as fallback: when online you always get the newest version
 // (so updates show up on the next launch), and the app still opens offline.
-const CACHE = 'weight-tracker-v1';
+const CACHE = 'weight-tracker-v2';
 const ASSETS = [
   './',
   'index.html',
   'styles.css',
+  'gym.js',
   'app.js',
   'manifest.webmanifest',
   'icons/icon-192.png',

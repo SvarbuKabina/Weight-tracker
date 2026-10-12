@@ -1,6 +1,6 @@
 'use strict';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const STORE_KEY = 'weight-tracker/v1';
 const KG_PER_LB = 0.45359237;
 const DAY_MS = 86400000;
@@ -29,8 +29,11 @@ function defaultState() {
       reminderTime: '08:00',
       range: '3m',
       pacePeriod: 'week',
-      lastExport: null, // ISO timestamp
+      gymIncludeSubs: false,
+      gymMetric: {}, // chosen progress measure: { w: 'e1rm' | …, bw: 'reps' | … }
+      lastExport: null, // ISO timestamp of the last full backup
     },
+    gym: defaultGym(), // see gym.js
   };
 }
 
@@ -48,6 +51,7 @@ function load() {
     return {
       entries: (Array.isArray(data.entries) ? data.entries : []).filter(validEntry).sort(byDate),
       settings: { ...base.settings, ...(data.settings || {}) },
+      gym: normalizeGym(data.gym),
     };
   } catch (err) {
     console.error('Could not read saved data', err);
@@ -266,29 +270,56 @@ function download(blob, filename) {
 
 // ---------- Navigation ----------
 
+// Pages: '' home · #pace · #history · #settings · #gym and its sub-pages (see gym.js).
 const VIEWS = { '': 'home', '#pace': 'pace', '#history': 'history', '#settings': 'settings' };
-const TITLES = { home: 'Weight', pace: 'Pace', history: 'History', settings: 'Settings' };
+const VIEW_NAMES = ['home', 'pace', 'gym', 'history', 'settings'];
+const TITLES = { home: 'Weight', pace: 'Pace', gym: 'Gym', history: 'History', settings: 'Settings' };
 let currentView = 'home';
+let lastHash = location.hash;
+let backUsesHistory = false; // true when the back button can simply go back a page
 
 function route() {
-  if (location.hash === '#add') {
+  const hash = location.hash;
+  const moved = hash !== lastHash;
+  if (moved) {
+    leaveGymRoute(lastHash, hash);
+    backUsesHistory = lastHash.startsWith('#gym') && hash.startsWith('#gym/');
+    lastHash = hash;
+    window.scrollTo(0, 0);
+  }
+  if (hash === '#add') {
     history.replaceState(null, '', location.pathname + location.search);
+    lastHash = '';
     showView('home');
     openEntry();
     return;
   }
-  showView(VIEWS[location.hash] || 'home');
+  if (hash.startsWith('#gym')) {
+    showView('gym');
+    renderGym(hash);
+    return;
+  }
+  showView(VIEWS[hash] || 'home');
 }
 
 function showView(name) {
-  const changed = name !== currentView;
   currentView = name;
-  for (const v of Object.values(VIEWS)) $(`#view-${v}`).hidden = v !== name;
+  for (const v of VIEW_NAMES) $(`#view-${v}`).hidden = v !== name;
   $$('.tab').forEach(t => (t.dataset.view === name ? t.setAttribute('aria-current', 'page') : t.removeAttribute('aria-current')));
-  $('#view-title').textContent = TITLES[name];
-  $('#add-btn').hidden = name === 'settings';
+  setTitle(TITLES[name], false);
+  $('#add-btn').hidden = name === 'settings' || name === 'gym';
   if (name === 'home') renderChart();
-  if (changed) window.scrollTo(0, 0);
+}
+
+function setTitle(text, showBack) {
+  $('#view-title').textContent = text;
+  $('#back-btn').hidden = !showBack;
+}
+
+// Back from a gym sub-page: a real "back" when we came from the gym, otherwise to the gym page.
+function goBack() {
+  if (backUsesHistory) history.back();
+  else location.hash = '#gym';
 }
 
 // ---------- Rendering: home ----------
@@ -298,6 +329,8 @@ function renderAll() {
   renderPace();
   renderHistory();
   renderSettings();
+  // Don't rebuild a workout that's being logged; it would drop the keyboard mid-typing.
+  if (currentView === 'gym' && parseGymRoute(location.hash).page !== 'session') renderGym();
 }
 
 function renderHome() {
@@ -396,10 +429,11 @@ function renderGoal(last) {
 }
 
 function renderBackupNudge() {
-  const n = state.entries.length;
+  const n = state.entries.length + state.gym.sessions.length;
   const last = state.settings.lastExport ? Date.parse(state.settings.lastExport) : null;
   const daysSinceExport = last ? (Date.now() - last) / DAY_MS : Infinity;
-  const tracking = n ? dayNum(todayISO()) - dayNum(state.entries[0].date) : 0;
+  const firsts = [state.entries[0], state.gym.sessions[0]].filter(Boolean).map(x => dayNum(x.date));
+  const tracking = firsts.length ? dayNum(todayISO()) - Math.min(...firsts) : 0;
   $('#backup-nudge').hidden = !(n >= 5 && daysSinceExport > 30 && (last || tracking >= 14));
 }
 
@@ -835,10 +869,9 @@ function renderSettings() {
   $('#reminder-time').value = state.settings.reminderTime;
   $('#gcal-link').href = googleCalendarUrl(state.settings.reminderTime);
 
-  const n = state.entries.length;
   const le = state.settings.lastExport;
-  $('#backup-status').textContent = `${n} weigh-in${n === 1 ? '' : 's'} saved on this device. ` +
-    (le ? `Last export: ${new Date(le).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}.` : 'Not exported yet.');
+  $('#backup-status').textContent = `${plural(state.entries.length, 'weigh-in')} and ${plural(state.gym.sessions.length, 'workout')} saved on this device. ` +
+    (le ? `Last backup: ${new Date(le).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}.` : 'No backup yet.');
 
   $('#app-version').textContent = APP_VERSION;
   renderInstall();
@@ -1045,9 +1078,10 @@ function downloadICS() {
   download(new Blob([lines.map(fold).join('\r\n') + '\r\n'], { type: 'text/calendar' }), 'weigh-in-reminder.ics');
 }
 
-// ---------- CSV export / import ----------
+// ---------- Backup, CSV export / import ----------
 
-const csvFileName = () => `weight-tracker-${todayISO()}.csv`;
+// Stop spreadsheets treating your text (notes, names) as formulas.
+const csvText = str => (/^[=+\-@]/.test(str) ? `'${str}` : str);
 
 function csvCell(value) {
   const str = String(value);
@@ -1056,12 +1090,47 @@ function csvCell(value) {
 
 function buildCSV() {
   const rows = [['date', 'weight_kg', 'weight_lb', 'note']];
-  for (const e of state.entries) {
-    let note = e.note || '';
-    if (/^[=+\-@]/.test(note)) note = `'${note}`; // stop spreadsheets treating notes as formulas
-    rows.push([e.date, +e.kg.toFixed(2), +(e.kg / KG_PER_LB).toFixed(1), note]);
-  }
+  for (const e of state.entries) rows.push([e.date, +e.kg.toFixed(2), +(e.kg / KG_PER_LB).toFixed(1), csvText(e.note || '')]);
   return '\uFEFF' + rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+}
+
+function buildGymCSV() {
+  const rows = [['date', 'workout', 'exercise', 'set', 'weight_kg', 'weight_lb', 'reps', 'bodyweight']];
+  for (const ses of state.gym.sessions) {
+    for (const en of ses.entries) {
+      const ex = state.gym.exercises[en.exerciseId];
+      validSets(en).forEach((st, i) => rows.push([
+        ses.date, csvText(ses.name || ''), csvText(ex ? ex.name : ''), i + 1,
+        +st.kg.toFixed(2), +(st.kg / KG_PER_LB).toFixed(1), st.reps, ex && ex.bodyweight ? 'yes' : 'no',
+      ]));
+    }
+  }
+  return '﻿' + rows.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+}
+
+function exportCSV() {
+  if (!state.entries.length) return toast('No weigh-ins to export yet.');
+  download(new Blob([buildCSV()], { type: 'text/csv;charset=utf-8' }), `weigh-ins-${todayISO()}.csv`);
+}
+
+function exportGymCSV() {
+  if (!state.gym.sessions.length) return toast('No workouts to export yet.');
+  download(new Blob([buildGymCSV()], { type: 'text/csv;charset=utf-8' }), `workouts-${todayISO()}.csv`);
+}
+
+// Full backup: everything as JSON, for moving to a new phone.
+const backupFileName = () => `weight-tracker-backup-${todayISO()}.json`;
+
+function buildBackup() {
+  flushSave();
+  return JSON.stringify({
+    app: 'weight-tracker',
+    backupVersion: 1,
+    exportedAt: new Date().toISOString(),
+    entries: state.entries,
+    settings: state.settings,
+    gym: state.gym,
+  });
 }
 
 function markExported() {
@@ -1071,29 +1140,44 @@ function markExported() {
   renderBackupNudge();
 }
 
-function exportCSV() {
-  if (!state.entries.length) return toast('Nothing to export yet.');
-  download(new Blob([buildCSV()], { type: 'text/csv;charset=utf-8' }), csvFileName());
+function downloadBackup() {
+  download(new Blob([buildBackup()], { type: 'application/json' }), backupFileName());
   markExported();
 }
 
 function canShareFiles() {
   try {
-    return !!(navigator.canShare && navigator.canShare({ files: [new File(['x'], 'x.csv', { type: 'text/csv' })] }));
+    return !!(navigator.canShare && navigator.canShare({ files: [new File(['{}'], 'x.json', { type: 'application/json' })] }));
   } catch {
     return false;
   }
 }
 
-async function shareCSV() {
-  if (!state.entries.length) return toast('Nothing to export yet.');
-  const file = new File([buildCSV()], csvFileName(), { type: 'text/csv' });
+async function shareBackup() {
+  const file = new File([buildBackup()], backupFileName(), { type: 'application/json' });
   try {
     await navigator.share({ files: [file], title: 'Weight Tracker backup' });
     markExported();
   } catch (err) {
-    if (err.name !== 'AbortError') toast('Sharing didn’t work. Try Export CSV instead.');
+    if (err.name !== 'AbortError') toast('Sharing didn’t work. Try Download backup instead.');
   }
+}
+
+function restoreBackup(text) {
+  let data = null;
+  try { data = JSON.parse(text); } catch {}
+  if (!data || data.app !== 'weight-tracker') return toast('That file isn’t a Weight Tracker backup.');
+  const entries = (Array.isArray(data.entries) ? data.entries : []).filter(validEntry).sort(byDate);
+  const gym = normalizeGym(data.gym);
+  const when = data.exportedAt ? ` from ${new Date(data.exportedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}` : '';
+  if (!confirm(`Restore the backup${when}?\n\nIt has ${plural(entries.length, 'weigh-in')} and ${plural(gym.sessions.length, 'workout')}. Everything on this device now will be replaced.`)) return;
+  state = { entries, settings: { ...defaultState().settings, ...(data.settings || {}) }, gym };
+  if (!save()) return;
+  editingTarget = false;
+  targetDirDraft = state.settings.targetRate ? state.settings.targetRate.dir : goalDirection() || -1;
+  renderAll();
+  toast('Backup restored');
+  requestPersistentStorage();
 }
 
 function parseCSV(text) {
@@ -1176,13 +1260,16 @@ function parseImport(text) {
   return { entries: [...byDay.values()], skipped };
 }
 
-async function importCSV(ev) {
+// A .json full backup is restored; anything else is read as a weigh-ins CSV.
+async function importFile(ev) {
   const input = ev.target;
   const file = input.files && input.files[0];
   input.value = '';
   if (!file) return;
-  if (file.size > 5 * 1024 * 1024) return toast('That file is too big to be a weight backup.');
-  const result = parseImport(await file.text());
+  if (file.size > 20 * 1024 * 1024) return toast('That file is too big to be a Weight Tracker backup.');
+  const text = await file.text();
+  if (/\.json$/i.test(file.name) || /^\s*\{/.test(text)) return restoreBackup(text);
+  const result = parseImport(text);
   if (result.error) return toast(result.error);
 
   const existing = new Map(state.entries.map(e => [e.date, e]));
@@ -1203,11 +1290,11 @@ async function importCSV(ev) {
 }
 
 function wipeAll() {
-  if (!confirm('Delete all weigh-ins and settings from this device? This can’t be undone.\n\nExport a CSV first if you might want them later.')) return;
+  if (!confirm('Delete all weigh-ins, workouts, your routine and settings from this device? This can’t be undone.\n\nDownload a backup first if you might want them later.')) return;
   state = defaultState();
   save();
   renderAll();
-  showView('home');
+  location.hash = '';
   toast('All data deleted');
 }
 
@@ -1261,11 +1348,16 @@ function init() {
   $('#gcal-link').addEventListener('click', e => { e.currentTarget.href = googleCalendarUrl(state.settings.reminderTime); });
   $('#ics-btn').addEventListener('click', downloadICS);
 
-  $('#export-btn').addEventListener('click', exportCSV);
+  $('#backup-btn').addEventListener('click', downloadBackup);
   $('#share-btn').hidden = !canShareFiles();
-  $('#share-btn').addEventListener('click', shareCSV);
-  $('#import-input').addEventListener('change', importCSV);
+  $('#share-btn').addEventListener('click', shareBackup);
+  $('#import-input').addEventListener('change', importFile);
+  $('#export-btn').addEventListener('click', exportCSV);
+  $('#gym-csv-btn').addEventListener('click', exportGymCSV);
   $('#wipe-btn').addEventListener('click', wipeAll);
+
+  $('#back-btn').addEventListener('click', goBack);
+  $('#form-dialog').addEventListener('click', e => { if (e.target === e.currentTarget) e.currentTarget.close(); });
 
   window.addEventListener('beforeinstallprompt', e => {
     e.preventDefault();
@@ -1295,6 +1387,11 @@ function init() {
   // The date may have rolled over while the app sat in the background.
   document.addEventListener('visibilitychange', () => { if (!document.hidden) renderAll(); });
   window.addEventListener('hashchange', route);
+
+  // Clear out workouts left empty when the app was closed, except one that's open right now.
+  const open = parseGymRoute(location.hash);
+  pruneAllSessions(location.hash.startsWith('#gym') && open.page === 'session' ? open.id : null);
+  save();
 
   renderAll();
   route();

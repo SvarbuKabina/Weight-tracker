@@ -29,7 +29,12 @@
 </head>
 <body>
   <header class="topbar">
-    <h1 id="view-title">Weight</h1>
+    <div class="topbar-inner">
+      <button type="button" class="back-btn" id="back-btn" aria-label="Back" hidden>
+        <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <h1 id="view-title">Weight</h1>
+    </div>
   </header>
 
   <main>
@@ -38,7 +43,7 @@
       <div class="card hero" id="hero"></div>
 
       <a class="banner" id="backup-nudge" href="#settings" hidden>
-        <span>Back up your weigh-ins so you can't lose them.</span>
+        <span>Back up your data so you can't lose it.</span>
         <strong>Back up</strong>
       </a>
 
@@ -109,6 +114,9 @@
       </div>
     </section>
 
+    <!-- Gym (filled by gym.js) -->
+    <section id="view-gym" class="view" hidden></section>
+
     <!-- History -->
     <section id="view-history" class="view" hidden>
       <div id="history-list"></div>
@@ -161,17 +169,23 @@
         <h2>Backup</h2>
         <p class="help" id="backup-status"></p>
         <div class="btn-row">
-          <button type="button" class="btn primary" id="export-btn">Export CSV</button>
-          <button type="button" class="btn" id="share-btn" hidden>Share CSV</button>
-          <label class="btn">Import CSV<input type="file" id="import-input" accept=".csv,text/csv,text/plain" hidden></label>
+          <button type="button" class="btn primary" id="backup-btn">Download backup</button>
+          <button type="button" class="btn" id="share-btn" hidden>Share backup</button>
+          <label class="btn">Restore or import<input type="file" id="import-input" accept=".json,.csv,application/json,text/csv,text/plain" hidden></label>
         </div>
-        <p class="help small">The file has the date, weight in kg and lb, and your notes. Use it to move your data to a new phone or open it in Excel.</p>
+        <p class="help small">The backup file has everything: weigh-ins, workouts, your routine and settings. Use it to move to a new phone.</p>
+        <h3 class="sub-head">Spreadsheets</h3>
+        <div class="btn-row">
+          <button type="button" class="btn" id="export-btn">Weigh-ins CSV</button>
+          <button type="button" class="btn" id="gym-csv-btn">Workouts CSV</button>
+        </div>
+        <p class="help small">For Excel or Google Sheets. A weigh-ins CSV can also be imported with “Restore or import”.</p>
       </div>
 
       <div class="card">
         <h2>About</h2>
         <p class="help">Version <span id="app-version"></span> · <span id="storage-status"></span></p>
-        <p class="help">Your weigh-ins are stored only on this device.</p>
+        <p class="help">Your weigh-ins and workouts are stored only on this device.</p>
         <button type="button" class="btn danger" id="wipe-btn">Delete all data</button>
       </div>
     </section>
@@ -185,11 +199,15 @@
     <div class="tabbar-inner">
       <a class="tab" href="#" data-view="home">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18l5-6 4 3 7-9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <span>Home</span>
+        <span>Weight</span>
       </a>
       <a class="tab" href="#pace" data-view="pace">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17a8 8 0 1 1 16 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 17l4-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         <span>Pace</span>
+      </a>
+      <a class="tab" href="#gym" data-view="gym">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 7v10M17.5 7v10M3.5 9.5v5M20.5 9.5v5M6.5 12h11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <span>Gym</span>
       </a>
       <a class="tab" href="#history" data-view="history">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -234,8 +252,11 @@
     </form>
   </dialog>
 
+  <dialog id="form-dialog"></dialog>
+
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
+  <script src="gym.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
