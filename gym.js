@@ -6,6 +6,7 @@
 
 const SERIES_MAX = 3; // lines on one progress chart (positions, or a lift and what replaced it)
 const BODYWEIGHT_HINT = /pull[- ]?ups?|chin[- ]?ups?|\bdips?\b|push[- ]?ups?|muscle[- ]?ups?|pistol|plank|inverted row|bodyweight/i;
+const BODYWEIGHT_LABEL = 'Bodyweight exercise (log added weight, or assistance as −)';
 
 function defaultGym() {
   return {
@@ -143,9 +144,32 @@ function agoText(iso) {
 
 const fmtLoad = kg => String(+toDisplay(kg).toFixed(2));
 
+// Bodyweight lifts store added weight; a negative number is assistance (assisted pull-ups).
 function loadText(kg, ex) {
-  if (ex && ex.bodyweight) return kg > 0 ? `BW+${fmtLoad(kg)} ${unit()}` : 'BW';
+  if (ex && ex.bodyweight) {
+    if (Math.abs(kg) < 1e-9) return 'BW';
+    return `BW${kg > 0 ? '+' : '−'}${fmtLoad(Math.abs(kg))} ${unit()}`;
+  }
   return `${fmtLoad(kg)} ${unit()}`;
+}
+
+const fmtDur = secs => `${Math.floor(secs / 60)}:${pad(secs % 60)}`;
+
+// "rest ~2:10": the average rest recorded after these sets, if any.
+function restText(sets) {
+  const rests = sets.map(st => st.rest).filter(r => r > 0);
+  if (!rests.length) return '';
+  return `rest ~${fmtDur(Math.round(rests.reduce((a, b) => a + b, 0) / rests.length))}`;
+}
+
+// Body weight on a day: the latest weigh-in on or before it, else the first one after.
+function bodyWeightOn(iso) {
+  let found = null;
+  for (const e of state.entries) {
+    if (e.date > iso) break;
+    found = e;
+  }
+  return (found || state.entries[0] || {}).kg ?? null;
 }
 
 const fmtOneSet = (st, ex) => `${loadText(st.kg, ex)} × ${st.reps}`;
@@ -163,20 +187,39 @@ function fmtSets(sets, ex) {
 
 const e1rm = st => (st.reps <= 1 ? st.kg : st.kg * (1 + st.reps / 30)); // Epley
 
+// Each measure turns one session's sets into a number (or null when there's nothing to measure).
+// `weight`: the value is a weight (shown in kg/lb). `mixes`: comparable between bodyweight and loaded lifts.
 const METRICS = {
-  e1rm: { label: 'Est. 1RM', load: true, of: sets => Math.max(...sets.map(e1rm)) },
-  top: { label: 'Heaviest', load: true, of: sets => Math.max(...sets.map(st => st.kg)) },
-  volume: { label: 'Volume', load: true, of: sets => sets.reduce((a, st) => a + st.kg * st.reps, 0) },
-  reps: { label: 'Most reps', load: false, of: sets => Math.max(...sets.map(st => st.reps)) },
-  totalReps: { label: 'Total reps', load: false, of: sets => sets.reduce((a, st) => a + st.reps, 0) },
-  added: { label: 'Added weight', load: true, of: sets => Math.max(...sets.map(st => st.kg)) },
+  e1rm: {
+    label: 'Est. 1RM', weight: true, mixes: true,
+    // Bodyweight lifts count your body weight from the Weight tab plus added weight (minus assistance).
+    of: (sets, ex, date) => {
+      const base = ex.bodyweight ? bodyWeightOn(date) : 0;
+      if (base == null) return null;
+      const vals = sets.map(st => ({ kg: base + st.kg, reps: st.reps })).filter(st => st.kg > 0).map(e1rm);
+      return vals.length ? Math.max(...vals) : null;
+    },
+  },
+  top: { label: 'Heaviest', weight: true, of: sets => Math.max(...sets.map(st => st.kg)) },
+  volume: { label: 'Volume', weight: true, of: sets => sets.reduce((a, st) => a + st.kg * st.reps, 0) },
+  // Assisted sets don't count toward a bodyweight lift's rep record.
+  reps: {
+    label: 'Most reps', weight: false, mixes: true,
+    of: (sets, ex) => {
+      const pool = ex.bodyweight ? sets.filter(st => st.kg >= 0) : sets;
+      return pool.length ? Math.max(...pool.map(st => st.reps)) : null;
+    },
+  },
+  added: { label: 'Added weight', weight: true, of: sets => Math.max(...sets.map(st => st.kg)) },
 };
-const metricKeys = ex => (ex.bodyweight ? ['reps', 'totalReps', 'added'] : ['e1rm', 'top', 'volume']);
-const metricValue = (key, v) => (METRICS[key].load ? toDisplay(v) : v);
+const metricKeys = ex => (ex.bodyweight ? ['reps', ...(state.entries.length ? ['e1rm'] : []), 'added'] : ['e1rm', 'top', 'volume']);
+const metricValue = (key, v) => (METRICS[key].weight ? toDisplay(v) : v);
 
 function fmtMetric(key, v) {
-  if (!METRICS[key].load) return String(Math.round(v));
+  if (v == null) return '—';
+  if (!METRICS[key].weight) return String(Math.round(v));
   if (key === 'volume') return `${Math.round(toDisplay(v)).toLocaleString('en-GB')} ${unit()}`;
+  if (key === 'added') return `${v > 0 ? '+' : v < 0 ? '−' : ''}${+toDisplay(Math.abs(v)).toFixed(1)} ${unit()}`;
   return `${+toDisplay(v).toFixed(1)} ${unit()}`;
 }
 
@@ -200,8 +243,15 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) flush
 
 // Drop sets without reps and exercises without sets; delete the session if nothing is left.
 function pruneSession(ses) {
+  const r = ses.rest;
+  const restEntry = r ? ses.entries.find(x => x.id === r.entryId) : null;
+  const restSet = restEntry && r.setIdx != null ? restEntry.sets[r.setIdx] : null;
   for (const en of ses.entries) en.sets = validSets(en);
   ses.entries = ses.entries.filter(en => en.sets.length);
+  if (r) { // a running rest timer follows its set to its new place
+    const i = restEntry && restSet ? restEntry.sets.indexOf(restSet) : -1;
+    r.setIdx = i >= 0 ? i : null;
+  }
   if (!ses.entries.length && !(ses.note || '').trim()) {
     G().sessions.splice(G().sessions.indexOf(ses), 1);
     return false;
@@ -240,6 +290,7 @@ function leaveGymRoute(prevHash, nextHash) {
   const r = parseGymRoute(prevHash);
   if (r.page !== 'session') return;
   const ses = G().sessions.find(x => x.id === r.id);
+  keepAwake(false); // a running rest timer keeps counting; the screen may sleep again
   if (!ses) return;
   flushSave();
   pruneSession(ses);
@@ -492,7 +543,7 @@ function subIds(names, mainId) {
 
 const slotFields = (name, bodyweight, subs) => [
   { key: 'name', label: 'Exercise', value: name, placeholder: 'Incline bench press', suggest: true },
-  { key: 'bw', label: 'Bodyweight exercise (log added weight only)', type: 'checkbox', value: bodyweight },
+  { key: 'bw', label: BODYWEIGHT_LABEL, type: 'checkbox', value: bodyweight },
   { key: 'subs', label: 'Substitutes', type: 'chips', value: subs, placeholder: 'Pec deck' },
 ];
 
@@ -572,6 +623,65 @@ function renderSession(box, ses) {
   box.append(h('div', { class: 'btn-row session-actions' },
     h('button', { type: 'button', class: 'btn primary', onclick: () => finishSession(ses) }, 'Finish workout'),
     h('button', { type: 'button', class: 'btn danger', onclick: () => deleteSession(ses) }, 'Delete')));
+  renderRestBar(ses);
+}
+
+// Rebuild one exercise card in place (the rest of the page, and any typing in it, is left alone).
+function redrawEntry(ses, entryId, focusNewSet) {
+  const old = document.querySelector(`#view-gym .ex-card[data-entry="${entryId}"]`);
+  const en = ses.entries.find(x => x.id === entryId);
+  if (!old || !en) return;
+  const next = entryCard(ses, en);
+  old.replaceWith(next);
+  if (focusNewSet) {
+    const reps = next.querySelectorAll('.set-reps');
+    const el = reps[reps.length - 1];
+    if (el) { el.focus(); el.select(); }
+  }
+}
+
+// Weight input for a set. Bodyweight lifts get a +/− switch: + is added weight, − is assistance.
+function loadInput(st, i, ex, ref) {
+  const input = h('input', {
+    class: 'input set-in', inputmode: 'decimal', autocomplete: 'off',
+    'aria-label': `${ex.bodyweight ? 'Added or assisted weight' : 'Weight'}, set ${i + 1}`,
+    value: st.kg ? fmtLoad(Math.abs(st.kg)) : '', placeholder: ref ? fmtLoad(Math.abs(ref.kg)) : '0',
+  });
+  if (!ex.bodyweight) {
+    input.addEventListener('input', () => {
+      const v = parseWeight(input.value);
+      st.kg = Number.isFinite(v) ? fromDisplay(v) : 0;
+      saveSoon();
+    });
+    return input;
+  }
+  let neg = st.kg < 0 || (!st.kg && !!ref && ref.kg < 0);
+  const sign = h('button', { type: 'button', class: 'sign-btn', 'aria-label': 'Switch between added weight and assistance' });
+  const paint = () => {
+    sign.textContent = neg ? '−' : '+';
+    sign.classList.toggle('neg', neg);
+    sign.setAttribute('aria-pressed', String(neg));
+  };
+  const apply = () => {
+    const v = parseWeight(input.value);
+    const mag = Number.isFinite(v) ? fromDisplay(v) : 0;
+    st.kg = neg ? -mag : mag;
+    saveSoon();
+  };
+  sign.addEventListener('click', () => { neg = !neg; paint(); apply(); });
+  input.addEventListener('input', () => {
+    if (/^\s*[-−]/.test(input.value)) { neg = true; paint(); } // a typed minus sign works too
+    apply();
+  });
+  input.addEventListener('change', () => { input.value = input.value.replace(/^\s*[-−]\s*/, ''); }); // the switch shows the sign
+  paint();
+  return h('div', { class: 'load-cell' }, sign, input);
+}
+
+function checkIcon() {
+  const svg = s('svg', { viewBox: '0 0 24 24', width: 20, height: 20, 'aria-hidden': 'true' });
+  svg.append(s('path', { d: 'M5 12.5l4.5 4.5L19 7.5', fill: 'none', stroke: 'currentColor', 'stroke-width': 2.6, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+  return svg;
 }
 
 function entryCard(ses, en) {
@@ -584,17 +694,8 @@ function entryCard(ses, en) {
   const lastHere = lastTime(en.exerciseId, ses, pos);
   const lastAny = lastTime(en.exerciseId, ses);
   const last = lastHere || lastAny; // reference for placeholders and new sets
-  const card = h('div', { class: 'card ex-card' });
-
-  const redraw = focusNewSet => {
-    const next = entryCard(ses, en);
-    card.replaceWith(next);
-    if (focusNewSet) {
-      const reps = next.querySelectorAll('.set-reps');
-      const el = reps[reps.length - 1];
-      if (el) { el.focus(); el.select(); }
-    }
-  };
+  const card = h('div', { class: 'card ex-card', 'data-entry': en.id });
+  const redraw = focusNewSet => redrawEntry(ses, en.id, focusNewSet);
 
   const title = choices.length > 1
     ? h('select', {
@@ -607,35 +708,45 @@ function entryCard(ses, en) {
     h('a', { class: 'btn-link', href: `#gym/x/${ex.id}/${pos}` }, 'Progress'),
     slot ? null : linkBtn('Remove', () => { ses.entries.splice(ses.entries.indexOf(en), 1); save(); card.remove(); }, 'danger-link')));
 
+  const withRest = sets => { const r = restText(sets); return r ? ` · ${r}` : ''; };
   const lines = [];
-  if (lastHere) lines.push(`Last time here (${fmtShortDate(lastHere.ses.date)}): ${fmtSets(lastHere.sets, ex)}`);
+  if (lastHere) lines.push(`Last time here (${fmtShortDate(lastHere.ses.date)}): ${fmtSets(lastHere.sets, ex)}${withRest(lastHere.sets)}`);
   if (lastAny && (!lastHere || lastAny.ses !== lastHere.ses)) {
     const where = positionInfo(lastAny.pos, lastAny.ses, en.exerciseId).short;
-    lines.push(`${lastHere ? 'Most recent' : 'Last time'} (${where}, ${fmtShortDate(lastAny.ses.date)}): ${fmtSets(lastAny.sets, ex)}`);
+    lines.push(`${lastHere ? 'Most recent' : 'Last time'} (${where}, ${fmtShortDate(lastAny.ses.date)}): ${fmtSets(lastAny.sets, ex)}${withRest(lastAny.sets)}`);
   }
   if (!lines.length) lines.push('No history yet for this exercise.');
-  card.append(h('div', { class: 'last-time' }, lines.map(t => h('p', {}, t))));
+  card.append(h('div', { class: 'last-time' }, lines.map(t => h('p', {}, t)),
+    ex.bodyweight && en.sets.length ? h('p', { class: 'hint' }, 'Tap + / − to switch between added weight and assistance.') : null));
 
   if (en.sets.length) {
     const sets = h('div', { class: 'sets' },
       h('div', { class: 'set-row set-head' },
-        h('span', {}, 'Set'), h('span', {}, ex.bodyweight ? `+${unit()}` : unit()), h('span', {}), h('span', {}, 'Reps'), h('span', {})));
+        h('span', {}, 'Set'), h('span', {}, ex.bodyweight ? `±${unit()}` : unit()), h('span', {}), h('span', {}, 'Reps'), h('span', {}, 'Done'), h('span', {})));
     en.sets.forEach((st, i) => {
       const ref = last && (last.sets[i] || last.sets[last.sets.length - 1]);
-      sets.append(h('div', { class: 'set-row' },
+      sets.append(h('div', { class: `set-row${st.done ? ' done' : ''}` },
         h('span', { class: 'set-num' }, String(i + 1)),
-        h('input', {
-          class: 'input set-in', inputmode: 'decimal', autocomplete: 'off', 'aria-label': `Weight, set ${i + 1}`,
-          value: st.kg > 0 ? fmtLoad(st.kg) : '', placeholder: ref ? fmtLoad(ref.kg) : '0',
-          oninput: e => { const v = parseWeight(e.target.value); st.kg = Number.isFinite(v) ? fromDisplay(v) : 0; saveSoon(); },
-        }),
+        loadInput(st, i, ex, ref),
         h('span', { class: 'set-x' }, '×'),
         h('input', {
           class: 'input set-in set-reps', inputmode: 'numeric', autocomplete: 'off', 'aria-label': `Reps, set ${i + 1}`,
           value: st.reps > 0 ? String(st.reps) : '', placeholder: ref ? String(ref.reps) : '',
           oninput: e => { const v = parseInt(e.target.value, 10); st.reps = v > 0 ? Math.min(v, 999) : 0; saveSoon(); },
         }),
-        h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Remove set ${i + 1}`, onclick: () => { en.sets.splice(i, 1); save(); redraw(); } }, '×')));
+        h('button', {
+          type: 'button', class: 'done-btn', 'aria-pressed': String(!!st.done),
+          'aria-label': st.done ? `Set ${i + 1} done. Tap to undo.` : `Mark set ${i + 1} done and start the rest timer`,
+          onclick: () => tickSet(ses, en, st, i, ref),
+        }, checkIcon()),
+        h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Remove set ${i + 1}`, onclick: () => removeSet(ses, en, i) }, '×')));
+      // The rest after this set: live while the timer runs, then the recorded time.
+      const r = ses.rest;
+      if (r && r.entryId === en.id && r.setIdx === i) {
+        sets.append(h('div', { class: 'rest-row live' }, 'Resting ', h('span', { class: 'rest-time' }, fmtDur(restSecs(ses)))));
+      } else if (st.rest) {
+        sets.append(h('div', { class: 'rest-row' }, `Rest ${fmtDur(st.rest)}`));
+      }
     });
     card.append(sets);
   }
@@ -661,7 +772,7 @@ async function addExtraExercise(ses) {
     title: 'Add exercise',
     fields: [
       { key: 'name', label: 'Exercise', placeholder: 'Cable fly', suggest: true },
-      { key: 'bw', label: 'Bodyweight exercise (log added weight only)', type: 'checkbox', value: false },
+      { key: 'bw', label: BODYWEIGHT_LABEL, type: 'checkbox', value: false },
     ],
     submitLabel: 'Add',
     validate: needName,
@@ -675,8 +786,169 @@ async function addExtraExercise(ses) {
   if (cards.length) cards[cards.length - 1].scrollIntoView({ block: 'center' });
 }
 
+function removeSet(ses, en, i) {
+  en.sets.splice(i, 1);
+  // Keep the running rest timer pointing at the right set.
+  const r = ses.rest;
+  if (r && r.entryId === en.id) {
+    if (r.setIdx === i) r.setIdx = null;
+    else if (r.setIdx > i) r.setIdx--;
+  }
+  save();
+  redrawEntry(ses, en.id);
+  renderRestBar(ses);
+}
+
+// ✓ marks a set done and starts the rest timer. An untouched row takes its hint values.
+function tickSet(ses, en, st, i, ref) {
+  if (st.done) {
+    st.done = false;
+    save();
+    redrawEntry(ses, en.id);
+    return;
+  }
+  if (!st.reps && ref) {
+    st.reps = ref.reps;
+    if (!st.kg) st.kg = ref.kg;
+  }
+  if (!st.reps) {
+    const reps = document.querySelectorAll(`#view-gym .ex-card[data-entry="${en.id}"] .set-reps`)[i];
+    if (reps) reps.focus();
+    toast('Enter the reps first');
+    return;
+  }
+  flushSave();
+  st.done = true;
+  st.doneAt = Date.now();
+  startRest(ses, en.id, i);
+  redrawEntry(ses, en.id);
+}
+
+// ---------- Rest timer ----------
+// The timer is stored on the workout as a start time, so it keeps counting while the
+// phone is locked or the app is closed. Stopping it saves the rest on the set it followed.
+
+const REST_LIMIT = 30 * 60; // a rest this long means the timer was forgotten; it isn't saved
+const restSecs = ses => Math.max(0, Math.floor((Date.now() - ses.rest.start) / 1000));
+
+function startRest(ses, entryId, setIdx) {
+  const prev = ses.rest ? ses.rest.entryId : null;
+  if (ses.rest) stopRest(ses); // forgot to press Stop: the next ✓ ends the previous rest
+  ses.rest = { start: Date.now(), entryId, setIdx };
+  save();
+  if (prev && prev !== entryId) redrawEntry(ses, prev);
+  renderRestBar(ses);
+}
+
+function stopRest(ses, record = true) {
+  const r = ses.rest;
+  if (!r) return;
+  ses.rest = null;
+  const secs = Math.round((Date.now() - r.start) / 1000);
+  const en = ses.entries.find(x => x.id === r.entryId);
+  const st = en && r.setIdx != null ? en.sets[r.setIdx] : null;
+  if (record && st && secs >= 5 && secs <= REST_LIMIT) st.rest = secs; // under 5 s is a mis-tap
+  save();
+}
+
+// Without a ✓: the rest follows the set you most recently ticked (or the last one with reps).
+function startRestManually(ses) {
+  let target = null;
+  let latestTick = -1;
+  for (const en of ses.entries) {
+    en.sets.forEach((st, i) => {
+      if (st.done && (st.doneAt || 0) > latestTick) { latestTick = st.doneAt || 0; target = { entryId: en.id, setIdx: i }; }
+    });
+  }
+  if (!target) for (const en of ses.entries) en.sets.forEach((st, i) => { if (st.reps > 0) target = { entryId: en.id, setIdx: i }; });
+  startRest(ses, target ? target.entryId : null, target ? target.setIdx : null);
+  if (target) redrawEntry(ses, target.entryId);
+}
+
+// Bottom of the workout page: a "Rest" button, or the running timer with Stop.
+function renderRestBar(ses) {
+  const old = $('#rest-bar');
+  let bar;
+  if (ses.rest) {
+    const en = ses.entries.find(x => x.id === ses.rest.entryId);
+    const where = en && ses.rest.setIdx != null ? ` · after ${exName(en.exerciseId)}, set ${ses.rest.setIdx + 1}` : '';
+    bar = h('div', { class: 'rest-bar', id: 'rest-bar' },
+      h('div', { class: 'rest-info' },
+        h('span', { class: 'rest-label' }, `Rest${where}`),
+        h('span', { class: 'rest-time rest-big', role: 'timer' }, fmtDur(restSecs(ses)))),
+      h('button', {
+        type: 'button', class: 'btn primary rest-stop',
+        onclick: () => {
+          const id = ses.rest && ses.rest.entryId;
+          stopRest(ses);
+          if (id) redrawEntry(ses, id);
+          renderRestBar(ses);
+        },
+      }, 'Stop'));
+  } else {
+    const icon = s('svg', { viewBox: '0 0 24 24', width: 20, height: 20, 'aria-hidden': 'true' });
+    icon.append(
+      s('circle', { cx: 12, cy: 13, r: 7.5, fill: 'none', stroke: 'currentColor', 'stroke-width': 2 }),
+      s('path', { d: 'M12 13V9.5M10 2.5h4', fill: 'none', stroke: 'currentColor', 'stroke-width': 2, 'stroke-linecap': 'round' }));
+    bar = h('button', { type: 'button', class: 'rest-fab', id: 'rest-bar', 'aria-label': 'Start the rest timer', onclick: () => startRestManually(ses) }, icon, 'Rest');
+  }
+  if (old) old.replaceWith(bar);
+  else $('#view-gym').append(bar);
+  syncRestTicker(ses);
+  keepAwake(!!ses.rest);
+}
+
+let restTicker = null;
+function syncRestTicker(ses) {
+  clearInterval(restTicker);
+  restTicker = null;
+  if (!ses.rest) return;
+  restTicker = setInterval(() => {
+    const r = parseGymRoute(location.hash);
+    if (!ses.rest || !$('#rest-bar') || r.page !== 'session' || r.id !== ses.id) {
+      clearInterval(restTicker);
+      restTicker = null;
+      return;
+    }
+    const secs = restSecs(ses);
+    if (secs > REST_LIMIT) {
+      const id = ses.rest.entryId;
+      stopRest(ses, false);
+      if (id) redrawEntry(ses, id);
+      renderRestBar(ses);
+      toast('Rest timer stopped after 30 minutes and wasn’t saved');
+      return;
+    }
+    $$('#view-gym .rest-time').forEach(el => { el.textContent = fmtDur(secs); });
+  }, 1000);
+}
+
+// Keep the screen on while resting, so the timer stays in view.
+let wakeLock = null;
+async function keepAwake(on) {
+  try {
+    if (on && !wakeLock && navigator.wakeLock && document.visibilityState === 'visible') {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } else if (!on && wakeLock) {
+      const lock = wakeLock;
+      wakeLock = null;
+      await lock.release();
+    }
+  } catch {}
+}
+// The screen lock is dropped when the app is hidden; take it again on return.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !location.hash.startsWith('#gym')) return;
+  const r = parseGymRoute(location.hash);
+  const ses = r.page === 'session' && G().sessions.find(x => x.id === r.id);
+  if (ses && ses.rest) keepAwake(true);
+});
+
 function finishSession(ses) {
   flushSave();
+  if (ses.rest) stopRest(ses);
+  keepAwake(false);
   const kept = pruneSession(ses);
   save();
   const sets = kept ? ses.entries.reduce((a, en) => a + en.sets.length, 0) : 0;
@@ -687,6 +959,8 @@ function finishSession(ses) {
 function deleteSession(ses) {
   const hasSets = ses.entries.some(en => validSets(en).length);
   if (hasSets && !confirm('Delete this workout and all its sets?')) return;
+  ses.rest = null;
+  keepAwake(false);
   const i = G().sessions.indexOf(ses);
   G().sessions.splice(i, 1);
   save();
@@ -746,15 +1020,16 @@ function renderExercise(box, ex, posParam) {
     const lastH = hist[hist.length - 1];
     const tiles = [];
     if (ex.bodyweight) {
-      const most = pick((b, a) => b.reps > a.reps || (b.reps === a.reps && b.kg > a.kg));
-      tiles.push(tile('Most reps', String(most.st.reps), `${loadText(most.st.kg, ex)} · ${fmtShortDate(most.date)}`));
-      const loaded = all.filter(x => x.st.kg > 0);
-      if (loaded.length) {
-        const heavy = loaded.reduce((a, b) => (b.st.kg > a.st.kg || (b.st.kg === a.st.kg && b.st.reps > a.st.reps) ? b : a));
-        tiles.push(tile('Most added weight', `+${fmtLoad(heavy.st.kg)} ${unit()}`, `× ${heavy.st.reps} · ${fmtShortDate(heavy.date)}`));
+      // Rep record from unassisted sets only; heaviest load counts assistance as negative.
+      const free = all.filter(x => x.st.kg >= 0);
+      if (free.length) {
+        const most = free.reduce((a, b) => (b.st.reps > a.st.reps || (b.st.reps === a.st.reps && b.st.kg > a.st.kg) ? b : a));
+        tiles.push(tile('Most reps', String(most.st.reps), `${loadText(most.st.kg, ex)} · ${fmtShortDate(most.date)}`));
       } else {
-        tiles.push(tile('Most added weight', '—', 'Bodyweight only so far'));
+        tiles.push(tile('Most reps', '—', 'Only assisted sets so far'));
       }
+      const heavy = pick((b, a) => b.kg > a.kg || (b.kg === a.kg && b.reps > a.reps));
+      tiles.push(tile('Heaviest load', loadText(heavy.st.kg, ex), `× ${heavy.st.reps} · ${fmtShortDate(heavy.date)}`));
     } else {
       const best = pick((b, a) => e1rm(b) > e1rm(a));
       tiles.push(tile('Best est. 1RM', fmtMetric('e1rm', e1rm(best.st)), `${fmtOneSet(best.st, ex)} · ${fmtShortDate(best.date)}`));
@@ -782,17 +1057,18 @@ function renderExercise(box, ex, posParam) {
         for (const [id, list] of others) {
           const other = exById(id) || { name: 'Deleted exercise', bodyweight: false };
           // Weight-based measures don't compare between bodyweight and loaded lifts.
-          if (METRICS[metric].load && other.bodyweight !== ex.bodyweight) left.push(`${other.name} (weights of bodyweight and loaded lifts don’t compare)`);
+          if (!METRICS[metric].mixes && other.bodyweight !== ex.bodyweight) left.push(`${other.name} (weights of bodyweight and loaded lifts don’t compare)`);
           else if (series.length < SERIES_MAX) series.push({ name: other.name, list, ex: other });
           else left.push(other.name);
         }
       }
     }
+    const measure = x => METRICS[metric].of(x.sets, exById(x.exId) || ex, x.ses.date);
     series.forEach((sr, k) => {
       sr.cls = `s${k + 1}`;
-      sr.points = sr.list.map(x => ({
-        day: dayNum(x.ses.date), date: x.ses.date, value: metricValue(metric, METRICS[metric].of(x.sets)),
-        text: fmtMetric(metric, METRICS[metric].of(x.sets)), detail: fmtSets(x.sets, sr.ex),
+      sr.points = sr.list.map(x => ({ x, v: measure(x) })).filter(p => p.v != null).map(({ x, v }) => ({
+        day: dayNum(x.ses.date), date: x.ses.date, value: metricValue(metric, v),
+        text: fmtMetric(metric, v), detail: fmtSets(x.sets, sr.ex),
       }));
     });
     const hasOthersSomewhere = pos === 'all' && positions.some(p => othersInPosition(p.key, ex.id).size);
@@ -810,7 +1086,10 @@ function renderExercise(box, ex, posParam) {
       series.length > 1 ? h('div', { class: 'legend' }, series.map(sr => h('span', {}, h('span', { class: `key-line ${sr.cls}` }), sr.name))) : null,
       left.length ? h('p', { class: 'help small' }, `Not shown: ${left.join(', ')}.`) : null,
       hasOthersSomewhere ? h('p', { class: 'help small' }, 'Pick a position above to compare with the lifts you sometimes do there instead.') : null,
-      metric === 'e1rm' ? h('p', { class: 'help small' }, 'Estimated one-rep max from your best set each session (Epley formula).') : null);
+      metric === 'e1rm' ? h('p', { class: 'help small' }, ex.bodyweight
+        ? 'Estimated one-rep max from your best set each session (Epley formula), counting your body weight from the Weight tab plus added weight, minus assistance.'
+        : 'Estimated one-rep max from your best set each session (Epley formula).') : null,
+      metric === 'reps' && ex.bodyweight ? h('p', { class: 'help small' }, 'Assisted sets don’t count toward most reps.') : null);
     box.append(card);
     gymChart(chartBox, series);
 
@@ -821,11 +1100,12 @@ function renderExercise(box, ex, posParam) {
     ].sort((a, b) => byDate(b.x.ses, a.x.ses));
     const list = h('div', { class: 'card list' });
     for (const { x, tag } of rows) {
+      const rest = restText(x.sets);
       list.append(listRow(
         `${fmtDate(x.ses.date, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}${tag ? ` · ${tag}` : ''}`,
-        fmtSets(x.sets, exById(x.exId)),
+        `${fmtSets(x.sets, exById(x.exId))}${rest ? ` · ${rest}` : ''}`,
         () => { location.hash = `#gym/w/${x.ses.id}`; },
-        h('span', { class: 'row-weight' }, fmtMetric(metric, METRICS[metric].of(x.sets)))));
+        h('span', { class: 'row-weight' }, fmtMetric(metric, measure(x)))));
     }
     box.append(sectionHead('History'), list);
   }
@@ -833,7 +1113,7 @@ function renderExercise(box, ex, posParam) {
   box.append(sectionHead('Exercise'), h('div', { class: 'card' },
     h('label', { class: 'check' },
       h('input', { type: 'checkbox', checked: !!ex.bodyweight, onchange: e => { ex.bodyweight = e.target.checked; save(); renderGym(); } }),
-      h('span', {}, 'Bodyweight exercise (log added weight only)')),
+      h('span', {}, BODYWEIGHT_LABEL)),
     h('div', { class: 'btn-row' }, h('button', { type: 'button', class: 'btn', onclick: () => renameExercise(ex) }, 'Rename'))));
 }
 
@@ -888,7 +1168,7 @@ function gymChart(box, series) {
   if (hi - lo < 2) { const c = (hi + lo) / 2; lo = c - 1; hi = c + 1; }
   const padY = (hi - lo) * 0.1;
   const step = niceStep(hi - lo + 2 * padY, 4);
-  const y0 = Math.max(0, Math.floor((lo - padY) / step) * step);
+  const y0 = lo >= 0 ? Math.max(0, Math.floor((lo - padY) / step) * step) : Math.floor((lo - padY) / step) * step; // below 0 only for assistance
   const y1 = Math.ceil((hi + padY) / step) * step;
   const X = d => m.l + ((d - x0) / (x1 - x0)) * iw;
   const Y = v => m.t + ((y1 - v) / (y1 - y0)) * ih;
