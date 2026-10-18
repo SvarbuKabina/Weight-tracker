@@ -1,6 +1,6 @@
 'use strict';
 
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.5.0';
 const STORE_KEY = 'weight-tracker/v1';
 const KG_PER_LB = 0.45359237;
 const DAY_MS = 86400000;
@@ -30,6 +30,8 @@ function defaultState() {
       range: '3m',
       pacePeriod: 'week',
       gymIncludeSubs: false,
+      restNotify: true, // show a running rest timer in the notification shade
+      restNotifyAsked: false,
       gymMetric: {}, // chosen progress measure: { w: 'e1rm' | …, bw: 'reps' | … }
       lastExport: null, // ISO timestamp of the last full backup
     },
@@ -874,6 +876,7 @@ function renderSettings() {
     (le ? `Last backup: ${new Date(le).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}.` : 'No backup yet.');
 
   $('#app-version').textContent = APP_VERSION;
+  renderRestNotifySetting();
   renderInstall();
   renderStorageStatus();
 }
@@ -1348,6 +1351,7 @@ function init() {
   // Recompute on click so "next occurrence" is never stale.
   $('#gcal-link').addEventListener('click', e => { e.currentTarget.href = googleCalendarUrl(state.settings.reminderTime); });
   $('#ics-btn').addEventListener('click', downloadICS);
+  $('#rest-notify').addEventListener('change', onRestNotifyToggle);
 
   $('#backup-btn').addEventListener('click', downloadBackup);
   $('#share-btn').hidden = !canShareFiles();
@@ -1396,6 +1400,7 @@ function init() {
 
   renderAll();
   route();
+  checkPendingRestStop(); // a rest stopped from the notification while the app was closed
   if (state.entries.length) requestPersistentStorage();
 
   if ('serviceWorker' in navigator && window.isSecureContext) {

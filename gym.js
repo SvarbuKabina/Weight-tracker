@@ -832,6 +832,7 @@ const REST_LIMIT = 30 * 60; // a rest this long means the timer was forgotten; i
 const restSecs = ses => Math.max(0, Math.floor((Date.now() - ses.rest.start) / 1000));
 
 function startRest(ses, entryId, setIdx) {
+  maybeAskNotify(); // always reached from a tap, which the permission prompt needs
   const prev = ses.rest ? ses.rest.entryId : null;
   if (ses.rest) stopRest(ses); // forgot to press Stop: the next ✓ ends the previous rest
   ses.rest = { start: Date.now(), entryId, setIdx };
@@ -840,11 +841,12 @@ function startRest(ses, entryId, setIdx) {
   renderRestBar(ses);
 }
 
-function stopRest(ses, record = true) {
+// `endAt` is when Stop was pressed (it can be earlier than now when stopped from the notification).
+function stopRest(ses, record = true, endAt = Date.now()) {
   const r = ses.rest;
   if (!r) return;
   ses.rest = null;
-  const secs = Math.round((Date.now() - r.start) / 1000);
+  const secs = Math.round((endAt - r.start) / 1000);
   const en = ses.entries.find(x => x.id === r.entryId);
   const st = en && r.setIdx != null ? en.sets[r.setIdx] : null;
   if (record && st && secs >= 5 && secs <= REST_LIMIT) st.rest = secs; // under 5 s is a mis-tap
@@ -944,6 +946,126 @@ document.addEventListener('visibilitychange', () => {
   const ses = r.page === 'session' && G().sessions.find(x => x.id === r.id);
   if (ses && ses.rest) keepAwake(true);
 });
+
+// ---------- Rest timer in the notification shade ----------
+// While the app is in the background or the phone is locked, a silent notification shows the
+// running rest. It's refreshed every 15 s, as often as Android lets a background app run; its
+// "Since" time is always exact. Its Stop button works without opening the app (see sw.js).
+
+const REST_TAG = 'rest-timer';
+const PENDING_CACHE = 'weight-tracker-pending'; // shared with sw.js
+let restNotifyTimer = null;
+
+const canNotify = () => 'Notification' in window && 'serviceWorker' in navigator;
+const activeRest = () => [...G().sessions].reverse().find(x => x.rest) || null;
+
+// Ask once, the first time a rest timer starts (Settings has the switch to turn it off).
+function maybeAskNotify() {
+  const st = state.settings;
+  if (!canNotify() || st.restNotify === false || st.restNotifyAsked || Notification.permission !== 'default') return;
+  st.restNotifyAsked = true;
+  save();
+  Notification.requestPermission().then(renderRestNotifySetting).catch(() => {});
+}
+
+async function showRestNotification() {
+  const ses = activeRest();
+  if (!ses || !canNotify() || state.settings.restNotify === false || Notification.permission !== 'granted') return;
+  const reg = await navigator.serviceWorker.getRegistration();
+  if (!reg) return;
+  const post = () => {
+    if (!ses.rest || restSecs(ses) > REST_LIMIT) { hideRestNotification(); return; }
+    const en = ses.entries.find(x => x.id === ses.rest.entryId);
+    const after = en && ses.rest.setIdx != null ? ` · after ${exName(en.exerciseId)}, set ${ses.rest.setIdx + 1}` : '';
+    const since = new Date(ses.rest.start).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    reg.showNotification(`Resting ${fmtDur(restSecs(ses))}`, {
+      tag: REST_TAG,
+      renotify: false,
+      silent: true,
+      timestamp: ses.rest.start,
+      body: `Since ${since}${after}`,
+      icon: 'icons/icon-192.png',
+      badge: 'icons/badge-96.png',
+      actions: [{ action: 'stop', title: 'Stop rest' }],
+      data: { kind: 'rest', sessionId: ses.id, start: ses.rest.start, url: `${appUrl()}#gym/w/${ses.id}` },
+    }).catch(() => {});
+  };
+  post();
+  clearInterval(restNotifyTimer);
+  restNotifyTimer = setInterval(post, 15000);
+}
+
+function hideRestNotification() {
+  clearInterval(restNotifyTimer);
+  restNotifyTimer = null;
+  if (!canNotify()) return;
+  navigator.serviceWorker.getRegistration()
+    .then(reg => (reg ? reg.getNotifications({ tag: REST_TAG }) : []))
+    .then(list => list.forEach(n => n.close()))
+    .catch(() => {});
+}
+
+// "Stop rest" pressed in the notification. sw.js sends this to the app if it's running and also
+// leaves it in a cache, so it's applied on the next open if the app had been closed.
+function applyRestStop(msg) {
+  if (!msg || msg.type !== 'rest-stop') return;
+  caches.open(PENDING_CACHE).then(c => c.delete('rest-stop')).catch(() => {});
+  const ses = G().sessions.find(x => x.id === msg.sessionId);
+  if (!ses || !ses.rest || ses.rest.start !== msg.start) return; // already stopped
+  const entryId = ses.rest.entryId;
+  stopRest(ses, true, msg.at);
+  const r = parseGymRoute(location.hash);
+  if (location.hash.startsWith('#gym') && r.page === 'session' && r.id === ses.id) {
+    if (entryId) redrawEntry(ses, entryId);
+    renderRestBar(ses);
+  }
+}
+
+async function checkPendingRestStop() {
+  try {
+    const res = await (await caches.open(PENDING_CACHE)).match('rest-stop');
+    if (res) applyRestStop(await res.json());
+  } catch {}
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', e => applyRestStop(e.data));
+  navigator.serviceWorker.startMessages();
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { showRestNotification(); return; }
+  hideRestNotification();
+  checkPendingRestStop();
+});
+
+// The Settings switch and a line on whether notifications are allowed.
+function renderRestNotifySetting() {
+  const box = $('#rest-notify');
+  const status = $('#rest-notify-status');
+  if (!box || !status) return;
+  box.checked = state.settings.restNotify !== false;
+  if (!canNotify()) {
+    box.disabled = true;
+    status.textContent = 'This browser can’t show notifications.';
+  } else if (Notification.permission === 'denied') {
+    status.textContent = 'Notifications are blocked for this app. To allow them, long-press the app icon, open App info → Notifications, and turn them on.';
+  } else if (Notification.permission === 'default') {
+    status.textContent = box.checked ? 'You’ll be asked to allow notifications the first time you start a rest.' : '';
+  } else {
+    status.textContent = '';
+  }
+}
+
+function onRestNotifyToggle(e) {
+  state.settings.restNotify = e.target.checked;
+  save();
+  if (e.target.checked && canNotify() && Notification.permission === 'default') {
+    state.settings.restNotifyAsked = true;
+    save();
+    Notification.requestPermission().then(renderRestNotifySetting).catch(() => {});
+  }
+  renderRestNotifySetting();
+}
 
 function finishSession(ses) {
   flushSave();

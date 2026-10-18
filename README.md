@@ -14,6 +14,7 @@ A small app for tracking body weight and gym lifts. It installs on Android and i
 - Substitutes per exercise (e.g. pec deck for incline bench); pick which one you did when logging
 - Log sets of weight × reps, with last time's sets shown (from the same position in the same workout first) and one tap to repeat them
 - Rest timer: tap ✓ when a set is done and it starts; tap Stop before the next set. Rests are saved per set and shown in history (averages) and the CSV
+- While the app is in the background or the phone is locked, the running rest shows as a silent notification (refreshed about every 15 s) with a Stop rest button that works without opening the app
 - Bodyweight exercises (pull-ups, dips…) log added weight with +, or assistance with − (assisted pull-ups); their est. 1RM uses your body weight from the Weight tab
 - Progress per lift: est. 1RM, heaviest set or volume (most reps, total reps or added weight for bodyweight lifts)
 - History follows the lift by name across workouts, and can be split by position (e.g. incline bench as Upper 2 #1 vs as the substitute in Upper 1 #3), optionally with whatever else you did in that position
